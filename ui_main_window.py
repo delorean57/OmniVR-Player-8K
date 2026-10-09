@@ -16,7 +16,7 @@ from PySide6.QtWidgets import (
     QInputDialog, QToolTip, QScrollArea, QDialog, QTableWidget,
     QTableWidgetItem, QHeaderView, QLineEdit, QCheckBox,
     QAbstractItemView, QGroupBox, QFormLayout, QDoubleSpinBox,
-    QListWidget, QListWidgetItem
+    QListWidget, QListWidgetItem, QStyle, QStyleOptionSlider
 )
 from PySide6.QtCore import Qt, QTimer, QPoint, QPointF, QSize, Signal, QSettings, QEvent
 from PySide6.QtGui import (
@@ -1878,11 +1878,17 @@ class ClickableSlider(QSlider):
         if event.button() == Qt.LeftButton:
             val = self._pos_to_val(event.position().x())
             self.setValue(val)
+            self.setSliderDown(True)
             self.sliderClicked.emit(val)
             event.accept()
+            return
         super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event):
+        if event.buttons() & Qt.LeftButton:
+            val = self._pos_to_val(event.position().x())
+            self.setValue(val)
+            self.sliderMoved.emit(val)
         if self.duration_sec > 0:
             val = self._pos_to_val(event.position().x())
             sec = (val / max(1, self.maximum())) * self.duration_sec
@@ -1896,6 +1902,14 @@ class ClickableSlider(QSlider):
                 QToolTip.showText(event.globalPosition().toPoint(), time_str, self)
         super().mouseMoveEvent(event)
 
+    def mouseReleaseEvent(self, event):
+        if event.button() == Qt.LeftButton:
+            self.setSliderDown(False)
+            self.sliderReleased.emit()
+            event.accept()
+            return
+        super().mouseReleaseEvent(event)
+
     def leaveEvent(self, event):
         win = self.window()
         if hasattr(win, 'in_viewport_tooltip'):
@@ -1903,9 +1917,15 @@ class ClickableSlider(QSlider):
         super().leaveEvent(event)
 
     def _pos_to_val(self, pos_x):
-        w = max(1, self.width())
-        ratio = max(0.0, min(1.0, pos_x / w))
-        return int(self.minimum() + ratio * (self.maximum() - self.minimum()))
+        opt = QStyleOptionSlider()
+        self.initStyleOption(opt)
+        handle_rect = self.style().subControlRect(QStyle.CC_Slider, opt, QStyle.SC_SliderHandle, self)
+        handle_w = handle_rect.width() if (handle_rect.isValid() and handle_rect.width() > 0) else 16
+        half_w = handle_w / 2.0
+        available_w = max(1, self.width() - handle_w)
+        adjusted_x = pos_x - half_w
+        ratio = max(0.0, min(1.0, adjusted_x / available_w))
+        return int(self.minimum() + round(ratio * (self.maximum() - self.minimum())))
 
 
 class VROverlayMenu(QFrame):
@@ -3785,14 +3805,18 @@ class VRMainWindow(QMainWindow):
 
     def _on_seek_released(self):
         val = self.seek_slider.value()
+        if getattr(self, '_last_seek_slider_val', None) == val:
+            return
+        self._last_seek_slider_val = val
         dur = self.backend.duration
         if dur > 0:
-            self.backend.seek((val / 1000.0) * dur, absolute=True)
+            self.backend.seek((val / 1000.0) * dur, absolute=True, exact=True)
 
     def _on_seek_clicked(self, val):
+        self._last_seek_slider_val = val
         dur = self.backend.duration
         if dur > 0:
-            self.backend.seek((val / 1000.0) * dur, absolute=True)
+            self.backend.seek((val / 1000.0) * dur, absolute=True, exact=True)
 
     def _on_file_loaded(self, info):
         w = info.get('width', 0)

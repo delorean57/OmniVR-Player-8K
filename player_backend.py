@@ -137,7 +137,9 @@ class VRVideoBackend(QObject):
                 vd_lavc_threads=16,
                 terminal=False,
                 ytdl=False,
-                keep_open='yes'
+                keep_open='yes',
+                hr_seek='always',
+                hr_seek_framedrop='no'
             )
             
             # Setup render context
@@ -256,11 +258,12 @@ class VRVideoBackend(QObject):
         if self.mpv_player:
             self.mpv_player.pause = not self.mpv_player.pause
 
-    def seek(self, seconds, absolute=True):
+    def seek(self, seconds, absolute=True, exact=True):
         if self.mpv_player:
             mode = 'absolute' if absolute else 'relative'
+            precision = 'exact' if exact else 'keyframes'
             try:
-                self.mpv_player.seek(seconds, mode)
+                self.mpv_player.seek(seconds, mode, precision)
             except Exception:
                 pass
 
