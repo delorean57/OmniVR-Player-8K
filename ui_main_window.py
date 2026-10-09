@@ -513,6 +513,16 @@ QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
 # -----------------------------------------------------------------------------
 DEFAULT_FILENAME_PATTERNS = [
     {
+        "id": "vr200_fisheye",
+        "name": "VR 200° Fisheye SBS (Super Domo / Entaniya / MKX200)",
+        "pattern": r"fisheye200|200.*fisheye|200_3dh|200.*sbs|vr200|mkx200|200deg|entaniya.*200",
+        "stereo": "VR180_SBS",
+        "dome_fov": 200.0,
+        "lens_model": 1,
+        "projection": "RECTILINEAR",
+        "enabled": True
+    },
+    {
         "id": "vr190_fisheye",
         "name": "VR 190° Fisheye SBS (Canon RF 5.2mm / Gran Domo)",
         "pattern": r"fisheye190|190.*fisheye|190_3dh|190.*sbs|vr190|rf5\.2|canon.*190",
@@ -587,6 +597,10 @@ class VRFilenamePatternManager:
             try:
                 data = json.loads(saved)
                 if isinstance(data, list) and len(data) > 0:
+                    existing_ids = {r.get("id") for r in data if isinstance(r, dict)}
+                    for d_rule in reversed(DEFAULT_FILENAME_PATTERNS):
+                        if d_rule.get("id") and d_rule["id"] not in existing_ids:
+                            data.insert(0, dict(d_rule))
                     return data
             except Exception as e:
                 print(f"[PatternManager] Error al cargar reglas guardadas: {e}")
@@ -653,11 +667,11 @@ class VREditPatternRuleDialog(QDialog):
         form.setSpacing(10)
 
         self.in_name = QLineEdit(self.rule_data.get("name", ""))
-        self.in_name.setPlaceholderText("Ej. VR 190° Fisheye SBS")
+        self.in_name.setPlaceholderText("Ej. VR 200° Fisheye SBS o VR 190° SBS")
         form.addRow("Nombre de Regla:", self.in_name)
 
         self.in_pattern = QLineEdit(self.rule_data.get("pattern", ""))
-        self.in_pattern.setPlaceholderText("Ej. fisheye190|190.*3dh|8k_fisheye")
+        self.in_pattern.setPlaceholderText("Ej. fisheye200|200.*3dh|8k_fisheye")
         form.addRow("Patrón (Palabras o Regex):", self.in_pattern)
 
         help_lbl = QLabel("<span style='color:#94a3b8; font-size:11px;'>Separe palabras clave con <b>|</b> (ej: <i>180_3dh|lr_180</i>). No distingue mayúsculas.</span>")
@@ -667,10 +681,12 @@ class VREditPatternRuleDialog(QDialog):
         self.cb_stereo.addItem("2D Mono (Estándar)", "MONO")
         self.cb_stereo.addItem("🕶️ VR 180° SBS (Side-by-Side)", "VR180_SBS")
         self.cb_stereo.addItem("🕶️ VR 190° SBS (Canon RF 5.2mm)", "VR190_SBS")
+        self.cb_stereo.addItem("🕶️ VR 200° SBS (Super Domo / MKX200)", "VR200_SBS")
         self.cb_stereo.addItem("🕶️ 360° SBS", "360_SBS")
         self.cb_stereo.addItem("🕶️ 360° Over-Under (Top-Bottom)", "360_OU")
         self.cb_stereo.addItem("👁️ VR 180° SBS (Ojo Derecho)", "VR180_SBS_RIGHT")
         self.cb_stereo.addItem("👁️ VR 190° SBS (Ojo Derecho)", "VR190_SBS_RIGHT")
+        self.cb_stereo.addItem("👁️ VR 200° SBS (Ojo Derecho)", "VR200_SBS_RIGHT")
         cur_s = self.rule_data.get("stereo", "VR180_SBS")
         idx_s = self.cb_stereo.findData(cur_s)
         if idx_s >= 0:
@@ -730,7 +746,10 @@ class VREditPatternRuleDialog(QDialog):
 
     def _on_stereo_changed(self):
         s_data = self.cb_stereo.currentData()
-        if s_data in ["VR190_SBS", "VR190_SBS_RIGHT"]:
+        if s_data in ["VR200_SBS", "VR200_SBS_RIGHT"]:
+            self.spin_dome.setValue(200.0)
+            self.cb_lens.setCurrentIndex(self.cb_lens.findData(1))
+        elif s_data in ["VR190_SBS", "VR190_SBS_RIGHT"]:
             self.spin_dome.setValue(190.0)
             self.cb_lens.setCurrentIndex(self.cb_lens.findData(1))
         elif s_data in ["VR180_SBS", "VR180_SBS_RIGHT"]:
@@ -754,8 +773,12 @@ class VREditPatternRuleDialog(QDialog):
             return
 
         stereo_val = self.cb_stereo.currentData()
-        if stereo_val == "VR190_SBS":
-            stereo_val = "VR180_SBS"
+        if stereo_val in ["VR200_SBS", "VR200_SBS_RIGHT"]:
+            stereo_val = "VR180_SBS" if stereo_val == "VR200_SBS" else "VR180_SBS_RIGHT"
+            dome_fov = 200.0
+            lens_model = self.cb_lens.currentData()
+        elif stereo_val in ["VR190_SBS", "VR190_SBS_RIGHT"]:
+            stereo_val = "VR180_SBS" if stereo_val == "VR190_SBS" else "VR180_SBS_RIGHT"
             dome_fov = 190.0
             lens_model = 1
         else:
@@ -848,8 +871,8 @@ class VRFilenamePatternsDialog(QDialog):
         test_row = QHBoxLayout()
         test_lbl = QLabel("Nombre de archivo a probar:")
         test_lbl.setStyleSheet("font-weight: 500;")
-        self.in_test = QLineEdit(sample_filename or "8K_FISHEYE190.mp4")
-        self.in_test.setPlaceholderText("Ej. 8K_FISHEYE190.mp4, 180x180_3dh.mp4, 8K_LR_180.mp4...")
+        self.in_test = QLineEdit(sample_filename or "8K_FISHEYE200.mp4")
+        self.in_test.setPlaceholderText("Ej. 8K_FISHEYE200.mp4, 8K_FISHEYE190.mp4, 180x180_3dh.mp4...")
         self.in_test.textChanged.connect(self._run_live_test)
         test_row.addWidget(test_lbl)
         test_row.addWidget(self.in_test)
@@ -892,8 +915,14 @@ class VRFilenamePatternsDialog(QDialog):
             self.table.setItem(row, 1, QTableWidgetItem(rule.get("name", "")))
             self.table.setItem(row, 2, QTableWidgetItem(rule.get("pattern", "")))
             st_text = rule.get("stereo", "MONO")
-            if st_text == "VR180_SBS":
-                st_disp = "VR180 SBS" if rule.get("dome_fov", 180) != 190 else "VR190 SBS"
+            if st_text in ["VR180_SBS", "VR180_SBS_RIGHT"]:
+                dfov = int(round(rule.get("dome_fov", 180)))
+                if dfov == 200:
+                    st_disp = "VR200 SBS"
+                elif dfov == 190:
+                    st_disp = "VR190 SBS"
+                else:
+                    st_disp = "VR180 SBS"
             elif st_text == "360_SBS":
                 st_disp = "360° SBS"
             elif st_text == "360_OU":
@@ -1057,7 +1086,7 @@ TOOLBAR_ITEM_LABELS = {
     "btn_stop": "⏹ Detener y reiniciar al inicio (Home)",
     "volume_group": "🔊 Control y barra de volumen",
     "btn_proj_menu": "📷 Menú de proyecciones 360 / VR",
-    "btn_stereo_menu": "🕶️ Menú de modo 3D estéreo (VR180 / 190 / 360)",
+    "btn_stereo_menu": "🕶️ Menú de modo 3D estéreo (VR180 / 190 / 200 / 360)",
     "btn_speed_menu": "⚡ Menú de velocidad de reproducción",
     "btn_fov": "🔍 Menú y selector de FOV / Zoom",
     "spacer": "↔ Espaciador flexible (Separador Izq / Der)",
@@ -1356,7 +1385,7 @@ CONTEXT_MENU_ITEM_LABELS = {
     "stop": "⏹ Detener y reiniciar al inicio (Home)",
     "sep_optical": "── Separador: Óptica y 3D ──",
     "proj_menu": "📷 Menú de Proyecciones 360 / VR",
-    "stereo_menu": "🕶️ Menú de Modo 3D Estéreo (VR180 / 190 / 360)",
+    "stereo_menu": "🕶️ Menú de Modo 3D Estéreo (VR180 / 190 / 200 / 360)",
     "toggle_eye": "👁️ Alternar Ojo Izquierdo ⇄ Derecho (E)",
     "fov_menu": "🔍 Menú de Campo de Visión (FOV)",
     "invert_menu": "🔀 Menú de Inversión de Ejes",
@@ -1701,9 +1730,9 @@ class VRAboutDialog(QDialog):
 
         features = [
             ("🚀 Decodificación por GPU Hardware", "Aceleración NVIDIA RTX NVDEC / D3D11VA para reproducción fluida de hasta 8K 60FPS sin pérdidas."),
-            ("🕶️ Soporte Estéreo VR Integral", "Monoscópico 2D, VR 180° SBS, VR 190° SBS (Canon RF 5.2mm Dual Fisheye), 360° SBS y 360° Over-Under."),
+            ("🕶️ Soporte Estéreo VR Integral", "Monoscópico 2D, VR 180° SBS, VR 190° SBS (Canon RF 5.2mm Dual Fisheye), VR 200° SBS (Super Domo / MKX200 Fisheye), 360° SBS y 360° Over-Under."),
             ("📷 Motores de Proyección Óptica", "Rectilíneo (estándar GoPro VR), Little Planet, Ojo de Pez Circular sin distorsión polar, Panini y 360° Esférico."),
-            ("🏷️ Auto-Detección Inteligente", "Detección instantánea de proyecciones y lentes según nombres de archivo (8K_FISHEYE190, 180x180_3dh, 8K_LR_180, etc.) con reglas personalizables."),
+            ("🏷️ Auto-Detección Inteligente", "Detección instantánea de proyecciones y lentes según nombres de archivo (8K_FISHEYE200, 8K_FISHEYE190, 180x180_3dh, 8K_LR_180, etc.) con reglas personalizables."),
             ("🎮 Inversión de Ejes & Roll", "Inversión independiente o simultánea de ejes Yaw/Pitch, rotación Roll con clic derecho y telemetría OSD.")
         ]
 
@@ -2257,6 +2286,11 @@ class VRMainWindow(QMainWindow):
         self.act_stereo_190.setCheckable(True)
         self.stereo_group.addAction(self.act_stereo_190)
         self.act_stereo_190.triggered.connect(self._set_vr190_preset)
+
+        self.act_stereo_200 = stereo_menu.addAction("🕶️ VR 200° SBS")
+        self.act_stereo_200.setCheckable(True)
+        self.stereo_group.addAction(self.act_stereo_200)
+        self.act_stereo_200.triggered.connect(self._set_vr200_preset)
 
         self.act_stereo_360_sbs = stereo_menu.addAction("🕶️ 360° SBS")
         self.act_stereo_360_sbs.setCheckable(True)
@@ -2877,8 +2911,9 @@ class VRMainWindow(QMainWindow):
         cur_dome = int(round(self.viewport.get_dome_fov_degrees()))
 
         is_mono = (cur_s == VRGLWidget.STEREO_MONO)
-        is_180 = (cur_s in [VRGLWidget.STEREO_VR180_SBS_LEFT, VRGLWidget.STEREO_VR180_SBS_RIGHT] and cur_dome != 190)
+        is_180 = (cur_s in [VRGLWidget.STEREO_VR180_SBS_LEFT, VRGLWidget.STEREO_VR180_SBS_RIGHT] and cur_dome not in [190, 200])
         is_190 = (cur_s in [VRGLWidget.STEREO_VR180_SBS_LEFT, VRGLWidget.STEREO_VR180_SBS_RIGHT] and cur_dome == 190)
+        is_200 = (cur_s in [VRGLWidget.STEREO_VR180_SBS_LEFT, VRGLWidget.STEREO_VR180_SBS_RIGHT] and cur_dome == 200)
         is_360_sbs = (cur_s in [VRGLWidget.STEREO_360_SBS_LEFT, VRGLWidget.STEREO_360_SBS_RIGHT])
         is_360_ou = (cur_s in [VRGLWidget.STEREO_360_OU_TOP, VRGLWidget.STEREO_360_OU_BOTTOM])
         is_dual = (cur_s in [VRGLWidget.STEREO_VR180_SBS_DUAL, VRGLWidget.STEREO_360_SBS_DUAL, VRGLWidget.STEREO_360_OU_DUAL])
@@ -2888,6 +2923,7 @@ class VRMainWindow(QMainWindow):
         menu.add_separator()
         menu.add_action("🕶️ VR 180° SBS", self._set_vr180_preset, checked=is_180)
         menu.add_action("🕶️ VR 190° SBS", self._set_vr190_preset, checked=is_190)
+        menu.add_action("🕶️ VR 200° SBS", self._set_vr200_preset, checked=is_200)
         menu.add_action("🕶️ 360° SBS", lambda: self._set_stereo_mode(VRGLWidget.STEREO_360_SBS_RIGHT if self._is_right_eye_selected() else VRGLWidget.STEREO_360_SBS_LEFT), checked=is_360_sbs)
         menu.add_action("🕶️ 360° Over-Under", lambda: self._set_stereo_mode(VRGLWidget.STEREO_360_OU_BOTTOM if self._is_right_eye_selected() else VRGLWidget.STEREO_360_OU_TOP), checked=is_360_ou)
         menu.add_separator()
@@ -3193,6 +3229,13 @@ class VRMainWindow(QMainWindow):
         self._set_lens_model(1)  # Activar Ojo de Pez Circular nativo para eliminar distorsión polar / pico
         self._set_stereo_mode(VRGLWidget.STEREO_VR180_SBS_LEFT)
 
+    def _set_vr200_preset(self):
+        """Preajuste directo con 1 clic para videos VR 200° SBS (Super Domo 200° / MKX200)."""
+        self._set_dome_fov(200.0)
+        self._set_lens_model(1)  # Activar Ojo de Pez Circular nativo para super domo de 200°
+        self._set_stereo_mode(VRGLWidget.STEREO_VR180_SBS_LEFT)
+        self.show_osd_banner("🕶️ Modo: VR 200° SBS (Super Domo 200°)")
+
     def _toggle_dual_stereo(self):
         cur = self.viewport.stereo_mode
         if cur in [VRGLWidget.STEREO_VR180_SBS_DUAL, VRGLWidget.STEREO_360_SBS_DUAL, VRGLWidget.STEREO_360_OU_DUAL,
@@ -3265,9 +3308,11 @@ class VRMainWindow(QMainWindow):
         if hasattr(self, 'act_stereo_mono'):
             self.act_stereo_mono.setChecked(mode_id == VRGLWidget.STEREO_MONO)
         if hasattr(self, 'act_stereo_180'):
-            self.act_stereo_180.setChecked(mode_id in [VRGLWidget.STEREO_VR180_SBS_LEFT, VRGLWidget.STEREO_VR180_SBS_RIGHT] and cur_dome != 190)
+            self.act_stereo_180.setChecked(mode_id in [VRGLWidget.STEREO_VR180_SBS_LEFT, VRGLWidget.STEREO_VR180_SBS_RIGHT] and cur_dome not in [190, 200])
         if hasattr(self, 'act_stereo_190'):
             self.act_stereo_190.setChecked(mode_id in [VRGLWidget.STEREO_VR180_SBS_LEFT, VRGLWidget.STEREO_VR180_SBS_RIGHT] and cur_dome == 190)
+        if hasattr(self, 'act_stereo_200'):
+            self.act_stereo_200.setChecked(mode_id in [VRGLWidget.STEREO_VR180_SBS_LEFT, VRGLWidget.STEREO_VR180_SBS_RIGHT] and cur_dome == 200)
         if hasattr(self, 'act_stereo_360_sbs'):
             self.act_stereo_360_sbs.setChecked(mode_id in [VRGLWidget.STEREO_360_SBS_LEFT, VRGLWidget.STEREO_360_SBS_RIGHT])
         if hasattr(self, 'act_stereo_360_ou'):
@@ -3311,8 +3356,11 @@ class VRMainWindow(QMainWindow):
             VRGLWidget.STEREO_360_OU_INVERTED: "360 OU Invert",
         }
         btn_txt = names.get(mode_id, '3D')
-        if (mode_id in [VRGLWidget.STEREO_VR180_SBS_LEFT, VRGLWidget.STEREO_VR180_SBS_RIGHT, VRGLWidget.STEREO_VR180_SBS_DUAL, VRGLWidget.STEREO_VR180_SBS_INVERTED]) and cur_dome == 190:
-            btn_txt = btn_txt.replace("180", "190")
+        if (mode_id in [VRGLWidget.STEREO_VR180_SBS_LEFT, VRGLWidget.STEREO_VR180_SBS_RIGHT, VRGLWidget.STEREO_VR180_SBS_DUAL, VRGLWidget.STEREO_VR180_SBS_INVERTED]):
+            if cur_dome == 190:
+                btn_txt = btn_txt.replace("180", "190")
+            elif cur_dome == 200:
+                btn_txt = btn_txt.replace("180", "200")
         self.btn_stereo_menu.setText(f"🕶️ {btn_txt} ▾")
         self._update_hud()
 
@@ -3670,6 +3718,8 @@ class VRMainWindow(QMainWindow):
                     "VR180_SBS_RIGHT": VRGLWidget.STEREO_VR180_SBS_RIGHT,
                     "VR190_SBS": VRGLWidget.STEREO_VR180_SBS_LEFT,
                     "VR190_SBS_RIGHT": VRGLWidget.STEREO_VR180_SBS_RIGHT,
+                    "VR200_SBS": VRGLWidget.STEREO_VR180_SBS_LEFT,
+                    "VR200_SBS_RIGHT": VRGLWidget.STEREO_VR180_SBS_RIGHT,
                     "360_SBS": VRGLWidget.STEREO_360_SBS_LEFT,
                     "360_SBS_RIGHT": VRGLWidget.STEREO_360_SBS_RIGHT,
                     "360_OU": VRGLWidget.STEREO_360_OU_TOP,
@@ -3812,13 +3862,48 @@ class VRMainWindow(QMainWindow):
             VRGLWidget.STEREO_360_OU_INVERTED: "360 OU Invertido",
         }
         stereo_str = stereo_names.get(self.viewport.stereo_mode, "Mono 2D")
-        lens_info = " [Canon Fisheye]" if self.viewport.get_lens_model() == 1 else ""
         dome_deg = self.viewport.get_dome_fov_degrees()
+        cur_dome_int = int(round(dome_deg))
+        if (self.viewport.stereo_mode in [VRGLWidget.STEREO_VR180_SBS_LEFT, VRGLWidget.STEREO_VR180_SBS_RIGHT, VRGLWidget.STEREO_VR180_SBS_DUAL, VRGLWidget.STEREO_VR180_SBS_INVERTED]):
+            if cur_dome_int == 190:
+                stereo_str = stereo_str.replace("VR180", "VR190")
+            elif cur_dome_int == 200:
+                stereo_str = stereo_str.replace("VR180", "VR200")
+        lens_info = " [Canon Fisheye]" if (self.viewport.get_lens_model() == 1 and cur_dome_int == 190) else (" [Super Fisheye]" if (self.viewport.get_lens_model() == 1 and cur_dome_int == 200) else (" [Fisheye]" if self.viewport.get_lens_model() == 1 else ""))
         dome_info = f" | Domo: {dome_deg:.0f}°{lens_info}" if (self.viewport.stereo_mode >= 1 and self.viewport.stereo_mode <= 4) else ""
+
+        # Telemetría dinámica de GPU y memoria de video
+        gpu_info = stats.get('gpu', {}) if stats else {}
+        if not gpu_info and hasattr(self.backend, 'gpu_monitor'):
+            gpu_info = self.backend.gpu_monitor.get_stats()
+
+        gpu_name = gpu_info.get('name', 'GPU')
+        gpu_load = gpu_info.get('load')
+        vram_used = gpu_info.get('vram_used_mb')
+        vram_total = gpu_info.get('vram_total_mb')
+
+        if gpu_load is not None and vram_used is not None and vram_total is not None:
+            vram_gb_used = vram_used / 1024.0
+            vram_gb_total = vram_total / 1024.0
+            gpu_line = f"<b>Uso GPU:</b> <span style='color:#38bdf8;'>{gpu_load}%</span> | <b>VRAM:</b> {vram_gb_used:.1f} / {vram_gb_total:.1f} GB<br>"
+        elif gpu_info.get('has_gpu', True):
+            gpu_line = f"<b>Aceleración:</b> {str(hwdec).upper()} | <b>Uso GPU:</b> N/A<br>"
+        else:
+            gpu_line = "<b>Modo:</b> CPU / Software (Sin GPU dedicada)<br>"
+
+        if hasattr(self, 'badge_label'):
+            if gpu_load is not None:
+                self.badge_label.setText(f"⚡ GPU {gpu_load}%")
+            elif gpu_info.get('has_gpu', True):
+                self.badge_label.setText(f"⚡ {str(hwdec).upper()}")
+            else:
+                self.badge_label.setText("💻 CPU SW")
+
         hud_text = (
-            f"<b>OmniVR 8K Player</b> — <i>GPU {str(hwdec).upper()} [RTX 5090]</i><br>"
-            f"<b>Resolución:</b> {res_str} | <b>Códec:</b> {codec}<br>"
+            f"<b>OmniVR 8K Player</b> — <i>[{gpu_name}]</i><br>"
+            f"<b>Resolución:</b> {res_str} | <b>Códec:</b> {codec} ({str(hwdec).upper()})<br>"
             f"<b>FPS:</b> {fps:.1f} | <b>Pérdida cuadros:</b> {drops}<br>"
+            f"{gpu_line}"
             f"<b>Orientación:</b> Yaw: {math.degrees(self.viewport.yaw):+06.1f}° | "
             f"Pitch: {math.degrees(self.viewport.pitch):+05.1f}° | "
             f"FOV: {math.degrees(self.viewport.fov):.1f}°{dome_info}<br>"
@@ -3919,6 +4004,8 @@ class VRMainWindow(QMainWindow):
                     "VR180_SBS_RIGHT": VRGLWidget.STEREO_VR180_SBS_RIGHT,
                     "VR190_SBS": VRGLWidget.STEREO_VR180_SBS_LEFT,
                     "VR190_SBS_RIGHT": VRGLWidget.STEREO_VR180_SBS_RIGHT,
+                    "VR200_SBS": VRGLWidget.STEREO_VR180_SBS_LEFT,
+                    "VR200_SBS_RIGHT": VRGLWidget.STEREO_VR180_SBS_RIGHT,
                     "360_SBS": VRGLWidget.STEREO_360_SBS_LEFT,
                     "360_SBS_RIGHT": VRGLWidget.STEREO_360_SBS_RIGHT,
                     "360_OU": VRGLWidget.STEREO_360_OU_TOP,

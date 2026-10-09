@@ -179,6 +179,16 @@ class VRGLWidget(QOpenGLWidget):
 
         self.backend.init_mpv(get_proc_address)
 
+        # Detectar nombre del adaptador OpenGL para máquinas sin NVML / sin GPU dedicada
+        try:
+            renderer = GL.glGetString(GL.GL_RENDERER)
+            if renderer:
+                r_str = renderer.decode('utf-8', errors='ignore') if isinstance(renderer, bytes) else str(renderer)
+                if hasattr(self.backend, 'gpu_monitor'):
+                    self.backend.gpu_monitor.set_renderer_name(r_str)
+        except Exception:
+            pass
+
         # Allocate initial FBO
         self._reallocate_fbo(self.fbo_width, self.fbo_height)
 

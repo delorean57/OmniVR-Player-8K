@@ -22,10 +22,10 @@
 4. **Panini (Vedutismo)**: Proyección cilíndrica que conserva las líneas verticales rectas incluso con ángulos de visión horizontales extremos (110° - 160°).
 5. **Esférico 360°**: Mapa panorámico equirrectangular completo interactivo.
 
-### 3. 🕶️ Formatos Estereoscópicos 3D & VR 180°
-- **VR 180 Side-by-Side (SBS)**:
-  - Ojo Izquierdo (mono 180°)
-  - Ojo Derecho (mono 180°)
+### 3. 🕶️ Formatos Estereoscópicos 3D & VR 180° / 190° / 200°
+- **VR 180° / 190° / 200° Side-by-Side (SBS)**:
+  - Ojo Izquierdo (mono domo 180°, 190° o 200°)
+  - Ojo Derecho (mono domo 180°, 190° o 200°)
   - Dual Estéreo (pantalla dividida para visores VR / Meta Quest / gafas 3D)
   - Anaglifo 3D (Rojo / Cian para gafas 3D tradicionales)
 - **360° Side-by-Side (SBS)**: Ojo Izq, Ojo Der, Dual Estéreo, Anaglifo 3D.
@@ -38,7 +38,7 @@
 - **Rueda del Ratón**: Zoom / ajuste de campo visual (FOV) continuo y fluido.
 - **Auto-Giro (Auto-Orbit)**: Rotación panorámica cinemática continua.
 - **Centrado Instantáneo (R)**: Animación suave para volver al horizonte y orientación frontal (0°, 0°, 0°).
-- **Auto-Detección Inteligente por Nombre de Archivo**: Reconoce automáticamente modos estéreo, cobertura de domo (180° / 190°) y modelos de lente ópticos a partir de patrones en el archivo (`8K_FISHEYE190`, `180x180_3dh`, `8K_LR_180`, `canon`, `rf5.2`, `tb`, `ou`). Totalmente personalizable desde *Herramientas → Configurar Detección por Nombre de Archivo...*.
+- **Auto-Detección Inteligente por Nombre de Archivo**: Reconoce automáticamente modos estéreo, cobertura de domo (180° / 190° / 200°) y modelos de lente ópticos a partir de patrones en el archivo (`8K_FISHEYE200`, `8K_FISHEYE190`, `180x180_3dh`, `8K_LR_180`, `canon`, `rf5.2`, `mkx200`, `tb`, `ou`). Totalmente personalizable desde *Herramientas → Configurar Detección por Nombre de Archivo...*.
 
 ### 5. 🎛️ Interfaz de Usuario Estudio Dark
 - Barra superior e inferior translúcidas con efecto cristal (glassmorphism) que se **ocultan automáticamente** a los 3.5 segundos de inactividad del ratón.
