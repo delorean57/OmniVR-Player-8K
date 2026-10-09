@@ -84,6 +84,13 @@ class VRGLWidget(QOpenGLWidget):
         self.last_mouse_pos = QPointF()
         self.is_dragging_left = False
         self.is_dragging_right = False
+        self.left_dragged = False
+        self.left_press_pos = QPointF()
+
+        # Temporizador para distinguir clic izquierdo simple (pausar/reanudar) de doble clic (pantalla completa)
+        self.left_click_timer = QTimer(self)
+        self.left_click_timer.setSingleShot(True)
+        self.left_click_timer.timeout.connect(self._on_single_left_click)
 
         # OpenGL objects
         self.shader_prog = None
@@ -411,6 +418,11 @@ class VRGLWidget(QOpenGLWidget):
         if needs_update:
             self.update()
 
+    def _on_single_left_click(self):
+        # Al reproducir el video, un clic izquierdo debe alternar entre pausa y reanudar
+        if self.backend and getattr(self.backend, 'current_file', None):
+            self.backend.toggle_play()
+
     def mousePressEvent(self, event):
         win = self.window()
         # Si el menú contextual u overlay está visible y el clic fue fuera, cerrarlo
@@ -423,7 +435,9 @@ class VRGLWidget(QOpenGLWidget):
 
         if event.button() == Qt.LeftButton:
             self.is_dragging_left = True
+            self.left_dragged = False
             self.last_mouse_pos = event.position()
+            self.left_press_pos = event.position()
             self.vel_yaw = 0.0
             self.vel_pitch = 0.0
             self.is_recentering = False
@@ -449,6 +463,9 @@ class VRGLWidget(QOpenGLWidget):
             win._handle_mouse_move_hover(pos.y())
 
         if self.is_dragging_left:
+            if hasattr(self, 'left_press_pos') and (pos - self.left_press_pos).manhattanLength() > 6:
+                self.left_dragged = True
+
             # Sensitivity scaled by FOV
             fov_scale = math.tan(self.fov * 0.5)
             sens = 0.0035 * fov_scale
@@ -487,8 +504,14 @@ class VRGLWidget(QOpenGLWidget):
 
     def mouseReleaseEvent(self, event):
         if event.button() == Qt.LeftButton:
+            was_dragging = getattr(self, 'is_dragging_left', False)
             self.is_dragging_left = False
             self.setCursor(Qt.ArrowCursor)
+            if was_dragging and not getattr(self, 'left_dragged', False):
+                # Clic izquierdo simple limpio (sin arrastre de cámara): alternar pausa/reanudar
+                if hasattr(self, 'left_click_timer'):
+                    self.left_click_timer.start(250)
+            self.left_dragged = False
         elif event.button() == Qt.RightButton:
             self.is_dragging_right = False
             self.setCursor(Qt.ArrowCursor)
@@ -529,8 +552,10 @@ class VRGLWidget(QOpenGLWidget):
         self._emit_camera_changed()
 
     def mouseDoubleClickEvent(self, event):
-        # Double click toggles fullscreen on parent window
+        # Doble clic izquierdo alterna pantalla completa (cancela el temporizador de pausa del clic simple)
         if event.button() == Qt.LeftButton:
+            if hasattr(self, 'left_click_timer') and self.left_click_timer.isActive():
+                self.left_click_timer.stop()
             win = self.window()
             if hasattr(win, '_toggle_fullscreen'):
                 win._toggle_fullscreen()

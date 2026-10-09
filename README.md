@@ -54,6 +54,7 @@
 | Tecla | Acción |
 | :--- | :--- |
 | `Espacio` | Reproducir / Pausar |
+| `E` | Alternar Ojo Izquierdo ⇄ Ojo Derecho (en caliente sin afectar la reproducción) |
 | `P` | Rotar cíclicamente la proyección (Rectilíneo → Planet → Fisheye → Panini → 360°) |
 | `1` - `5` | Proyecciones directas (1: Rectilíneo, 2: Planet, 3: Fisheye, 4: Panini, 5: 360°) |
 | `+` / `=` | Acercar Zoom (Disminuir ángulo FOV) |
@@ -68,8 +69,10 @@
 | `↑` / `↓` | Subir / Bajar volumen (+/- 5%) |
 | `M` | Silenciar / Activar audio (Mute) |
 | `Ctrl + O` | Abrir cuadro de diálogo de archivo |
+| `Clic Izquierdo` | Alternar entre Pausa y Reanudar reproducción (un solo clic sin arrastre) |
 | `Doble Clic` | Alternar Pantalla Completa |
-| `Clic Derecho` | Abrir Menú Contextual In-Viewport (100% visible en pantalla completa) |
+| `Clic Derecho` | Abrir Menú Contextual In-Viewport (reordenable y personalizable) |
+| `Clic Der en Barra` | Personalizar y reordenar botones (Drag & Drop) de la barra inferior |
 | `Arrastrar y Soltar` | Suelta cualquier archivo `.mp4`, `.mkv`, `.mov`, `.360` en la ventana |
 
 ---

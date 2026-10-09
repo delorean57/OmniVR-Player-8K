@@ -15,7 +15,8 @@ from PySide6.QtWidgets import (
     QSizePolicy, QToolButton, QMessageBox, QMenu, QMenuBar,
     QInputDialog, QToolTip, QScrollArea, QDialog, QTableWidget,
     QTableWidgetItem, QHeaderView, QLineEdit, QCheckBox,
-    QAbstractItemView, QGroupBox, QFormLayout, QDoubleSpinBox
+    QAbstractItemView, QGroupBox, QFormLayout, QDoubleSpinBox,
+    QListWidget, QListWidgetItem
 )
 from PySide6.QtCore import Qt, QTimer, QPoint, QPointF, QSize, Signal, QSettings, QEvent
 from PySide6.QtGui import (
@@ -668,6 +669,8 @@ class VREditPatternRuleDialog(QDialog):
         self.cb_stereo.addItem("🕶️ VR 190° SBS (Canon RF 5.2mm)", "VR190_SBS")
         self.cb_stereo.addItem("🕶️ 360° SBS", "360_SBS")
         self.cb_stereo.addItem("🕶️ 360° Over-Under (Top-Bottom)", "360_OU")
+        self.cb_stereo.addItem("👁️ VR 180° SBS (Ojo Derecho)", "VR180_SBS_RIGHT")
+        self.cb_stereo.addItem("👁️ VR 190° SBS (Ojo Derecho)", "VR190_SBS_RIGHT")
         cur_s = self.rule_data.get("stereo", "VR180_SBS")
         idx_s = self.cb_stereo.findData(cur_s)
         if idx_s >= 0:
@@ -727,10 +730,10 @@ class VREditPatternRuleDialog(QDialog):
 
     def _on_stereo_changed(self):
         s_data = self.cb_stereo.currentData()
-        if s_data == "VR190_SBS":
+        if s_data in ["VR190_SBS", "VR190_SBS_RIGHT"]:
             self.spin_dome.setValue(190.0)
             self.cb_lens.setCurrentIndex(self.cb_lens.findData(1))
-        elif s_data == "VR180_SBS":
+        elif s_data in ["VR180_SBS", "VR180_SBS_RIGHT"]:
             self.spin_dome.setValue(180.0)
             self.cb_lens.setCurrentIndex(self.cb_lens.findData(0))
 
@@ -998,6 +1001,595 @@ class VRFilenamePatternsDialog(QDialog):
         self.accept()
 
 
+DEFAULT_TOOLBAR_ORDER = [
+    "btn_open",
+    "btn_prev5",
+    "btn_play",
+    "btn_next5",
+    "btn_stop",
+    "volume_group",
+    "btn_proj_menu",
+    "btn_stereo_menu",
+    "btn_speed_menu",
+    "btn_fov",
+    "spacer",
+    "btn_loop",
+    "btn_recenter",
+    "btn_toggle_eye",
+    "btn_orbit",
+    "btn_invert_axes",
+    "btn_hud_btn",
+    "btn_flip_x_btn",
+    "btn_flip_btn",
+    "btn_fullscreen",
+    "badge_label",
+]
+
+DEFAULT_TOOLBAR_VISIBILITY = {
+    "btn_open": True,
+    "btn_prev5": True,
+    "btn_play": True,
+    "btn_next5": True,
+    "btn_stop": True,
+    "volume_group": True,
+    "btn_proj_menu": True,
+    "btn_stereo_menu": True,
+    "btn_speed_menu": True,
+    "btn_fov": True,
+    "spacer": True,
+    "btn_loop": True,
+    "btn_recenter": True,
+    "btn_toggle_eye": True,    # Activado por defecto en la barra
+    "btn_orbit": False,        # Sustituido por el botón de alternar ojo por defecto
+    "btn_invert_axes": True,
+    "btn_hud_btn": True,
+    "btn_flip_x_btn": True,
+    "btn_flip_btn": True,
+    "btn_fullscreen": True,
+    "badge_label": True,
+}
+
+TOOLBAR_ITEM_LABELS = {
+    "btn_open": "📁 Abrir archivo de video (Ctrl+O)",
+    "btn_prev5": "⏪ Retroceder 5 segundos",
+    "btn_play": "▶ / ⏸ Reproducir y pausar (Espacio)",
+    "btn_next5": "⏩ Adelantar 5 segundos",
+    "btn_stop": "⏹ Detener y reiniciar al inicio (Home)",
+    "volume_group": "🔊 Control y barra de volumen",
+    "btn_proj_menu": "📷 Menú de proyecciones 360 / VR",
+    "btn_stereo_menu": "🕶️ Menú de modo 3D estéreo (VR180 / 190 / 360)",
+    "btn_speed_menu": "⚡ Menú de velocidad de reproducción",
+    "btn_fov": "🔍 Menú y selector de FOV / Zoom",
+    "spacer": "↔ Espaciador flexible (Separador Izq / Der)",
+    "btn_loop": "🔁 Repetición en bucle (Ctrl+L)",
+    "btn_recenter": "🎯 Centrar cámara al frente (R)",
+    "btn_toggle_eye": "👁️ Alternar Ojo Izquierdo ⇄ Derecho (E)",
+    "btn_orbit": "🔄 Giro automático 360° (Auto-Orbit)",
+    "btn_invert_axes": "🔀 Menú de inversión de ejes (I)",
+    "btn_hud_btn": "ℹ️ HUD / Telemetría OSD en pantalla (H)",
+    "btn_flip_x_btn": "⇄ Invertir orientación horizontal (Espejo)",
+    "btn_flip_btn": "⇅ Invertir orientación vertical",
+    "btn_fullscreen": "⛶ Alternar pantalla completa (F / F11)",
+    "badge_label": "⚡ Insignia GPU 8K NVDEC",
+}
+
+
+class VRCustomizeToolbarDialog(QDialog):
+    """
+    Diálogo Glassmorphic de Personalización y Reordenación de la Barra de Controles Inferior.
+    Permite activar, ocultar y reordenar cualquier botón mediante arrastrar y soltar (Drag & Drop)
+    o utilizando los botones Subir / Bajar.
+    """
+    def __init__(self, main_window, parent=None):
+        super().__init__(parent or main_window)
+        self.main_window = main_window
+        self.setWindowTitle("Personalizar y Reordenar Barra de Controles")
+        self.resize(580, 660)
+        self.setStyleSheet(DARK_STYLESHEET)
+
+        layout = QVBoxLayout(self)
+        layout.setSpacing(12)
+
+        header = QLabel("⚙️ PERSONALIZAR Y REORDENAR BARRA DE CONTROLES")
+        header.setStyleSheet("font-size: 16px; font-weight: bold; color: #38bdf8;")
+        sub = QLabel(
+            "• Active o desactive las casillas para mostrar u ocultar botones.<br>"
+            "• <b>Arrastre los elementos</b> con el ratón o use los botones <b>▲ / ▼</b> para cambiar su posición en la barra."
+        )
+        sub.setStyleSheet("color: #94a3b8; font-size: 12px; line-height: 1.4;")
+        layout.addWidget(header)
+        layout.addWidget(sub)
+
+        # Contenedor central: Lista interactiva a la izquierda + Botones de orden a la derecha
+        center_layout = QHBoxLayout()
+        center_layout.setSpacing(12)
+
+        self.list_widget = QListWidget(self)
+        self.list_widget.setDragEnabled(True)
+        self.list_widget.setAcceptDrops(True)
+        self.list_widget.setDropIndicatorShown(True)
+        self.list_widget.setDragDropMode(QAbstractItemView.InternalMove)
+        self.list_widget.setDefaultDropAction(Qt.MoveAction)
+        self.list_widget.setSelectionMode(QAbstractItemView.SingleSelection)
+        self.list_widget.setStyleSheet(
+            "QListWidget {"
+            "    background-color: rgba(15, 23, 42, 0.65);"
+            "    border: 1px solid rgba(255, 255, 255, 0.1);"
+            "    border-radius: 8px;"
+            "    padding: 6px;"
+            "    color: #f1f5f9;"
+            "    font-size: 12px;"
+            "}"
+            "QListWidget::item {"
+            "    background-color: rgba(30, 41, 59, 0.5);"
+            "    border: 1px solid rgba(255, 255, 255, 0.05);"
+            "    border-radius: 6px;"
+            "    padding: 7px 10px;"
+            "    margin-bottom: 3px;"
+            "    color: #f1f5f9;"
+            "}"
+            "QListWidget::item:hover {"
+            "    background-color: rgba(56, 189, 248, 0.15);"
+            "    border: 1px solid rgba(56, 189, 248, 0.3);"
+            "}"
+            "QListWidget::item:selected {"
+            "    background-color: rgba(2, 132, 199, 0.4);"
+            "    border: 1px solid #38bdf8;"
+            "    color: #ffffff;"
+            "}"
+        )
+        center_layout.addWidget(self.list_widget, stretch=1)
+
+        # Panel lateral de botones de reordenación
+        side_layout = QVBoxLayout()
+        side_layout.setSpacing(8)
+
+        lbl_order = QLabel("ORDEN")
+        lbl_order.setStyleSheet("color: #38bdf8; font-weight: bold; font-size: 11px;")
+        side_layout.addWidget(lbl_order)
+
+        btn_top = QPushButton("⤒ Al Inicio")
+        btn_top.setToolTip("Mover el elemento seleccionado al principio de la barra")
+        btn_top.clicked.connect(self._move_to_top)
+        side_layout.addWidget(btn_top)
+
+        btn_up = QPushButton("▲ Subir")
+        btn_up.setToolTip("Subir una posición")
+        btn_up.clicked.connect(self._move_up)
+        side_layout.addWidget(btn_up)
+
+        btn_down = QPushButton("▼ Bajar")
+        btn_down.setToolTip("Bajar una posición")
+        btn_down.clicked.connect(self._move_down)
+        side_layout.addWidget(btn_down)
+
+        btn_bottom = QPushButton("⤓ Al Final")
+        btn_bottom.setToolTip("Mover el elemento seleccionado al final de la barra")
+        btn_bottom.clicked.connect(self._move_to_bottom)
+        side_layout.addWidget(btn_bottom)
+
+        side_layout.addSpacing(12)
+
+        lbl_select = QLabel("SELECCIÓN")
+        lbl_select.setStyleSheet("color: #38bdf8; font-weight: bold; font-size: 11px;")
+        side_layout.addWidget(lbl_select)
+
+        btn_select_all = QPushButton("☑ Marcar Todos")
+        btn_select_all.clicked.connect(self._select_all)
+        side_layout.addWidget(btn_select_all)
+
+        btn_deselect_all = QPushButton("☐ Desmarcar Todos")
+        btn_deselect_all.clicked.connect(self._deselect_all)
+        side_layout.addWidget(btn_deselect_all)
+
+        btn_reset = QPushButton("🔄 Predeterminados")
+        btn_reset.setToolTip("Restablecer el orden y visibilidad por defecto")
+        btn_reset.clicked.connect(self._reset_defaults)
+        side_layout.addWidget(btn_reset)
+
+        side_layout.addStretch()
+        center_layout.addLayout(side_layout)
+        layout.addLayout(center_layout)
+
+        # Nota explicativa
+        note_lbl = QLabel(
+            "<span style='color:#94a3b8; font-size:11px;'>"
+            "💡 <b>Nota:</b> El elemento <b>'↔ Espaciador flexible'</b> empuja los botones anteriores hacia la "
+            "izquierda y los posteriores hacia la derecha de la ventana."
+            "</span>"
+        )
+        note_lbl.setWordWrap(True)
+        layout.addWidget(note_lbl)
+
+        # Botones inferiores (Cancelar, Guardar)
+        btns_layout = QHBoxLayout()
+        btns_layout.addStretch()
+        btn_cancel = QPushButton("Cancelar")
+        btn_cancel.clicked.connect(self.reject)
+        btns_layout.addWidget(btn_cancel)
+
+        btn_save = QPushButton("Guardar y Aplicar")
+        btn_save.setObjectName("primaryBtn")
+        btn_save.clicked.connect(self._save_and_apply)
+        btns_layout.addWidget(btn_save)
+        layout.addLayout(btns_layout)
+
+        self._populate_list()
+
+    def _populate_list(self):
+        order, visibility = self.main_window._load_toolbar_config()
+        self.list_widget.clear()
+        for key in order:
+            label = TOOLBAR_ITEM_LABELS.get(key, key)
+            is_vis = visibility.get(key, DEFAULT_TOOLBAR_VISIBILITY.get(key, True))
+            item = QListWidgetItem(label)
+            item.setData(Qt.UserRole, key)
+            item.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable | Qt.ItemIsUserCheckable | Qt.ItemIsDragEnabled)
+            item.setCheckState(Qt.Checked if is_vis else Qt.Unchecked)
+            self.list_widget.addItem(item)
+
+    def _move_up(self):
+        row = self.list_widget.currentRow()
+        if row > 0:
+            item = self.list_widget.takeItem(row)
+            self.list_widget.insertItem(row - 1, item)
+            self.list_widget.setCurrentRow(row - 1)
+
+    def _move_down(self):
+        row = self.list_widget.currentRow()
+        if 0 <= row < self.list_widget.count() - 1:
+            item = self.list_widget.takeItem(row)
+            self.list_widget.insertItem(row + 1, item)
+            self.list_widget.setCurrentRow(row + 1)
+
+    def _move_to_top(self):
+        row = self.list_widget.currentRow()
+        if row > 0:
+            item = self.list_widget.takeItem(row)
+            self.list_widget.insertItem(0, item)
+            self.list_widget.setCurrentRow(0)
+
+    def _move_to_bottom(self):
+        row = self.list_widget.currentRow()
+        if 0 <= row < self.list_widget.count() - 1:
+            item = self.list_widget.takeItem(row)
+            self.list_widget.insertItem(self.list_widget.count(), item)
+            self.list_widget.setCurrentRow(self.list_widget.count() - 1)
+
+    def _select_all(self):
+        for i in range(self.list_widget.count()):
+            self.list_widget.item(i).setCheckState(Qt.Checked)
+
+    def _deselect_all(self):
+        for i in range(self.list_widget.count()):
+            self.list_widget.item(i).setCheckState(Qt.Unchecked)
+
+    def _reset_defaults(self):
+        self.list_widget.clear()
+        for key in DEFAULT_TOOLBAR_ORDER:
+            label = TOOLBAR_ITEM_LABELS.get(key, key)
+            is_vis = DEFAULT_TOOLBAR_VISIBILITY.get(key, True)
+            item = QListWidgetItem(label)
+            item.setData(Qt.UserRole, key)
+            item.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable | Qt.ItemIsUserCheckable | Qt.ItemIsDragEnabled)
+            item.setCheckState(Qt.Checked if is_vis else Qt.Unchecked)
+            self.list_widget.addItem(item)
+
+    def _save_and_apply(self):
+        new_order = []
+        new_visibility = {}
+        for i in range(self.list_widget.count()):
+            item = self.list_widget.item(i)
+            key = item.data(Qt.UserRole)
+            new_order.append(key)
+            new_visibility[key] = (item.checkState() == Qt.Checked)
+
+        self.main_window._save_toolbar_config(new_order, new_visibility)
+        self.accept()
+
+
+DEFAULT_CONTEXT_MENU_ORDER = [
+    "title",
+    "open",
+    "sep_playback",
+    "play_pause",
+    "seek_backward",
+    "seek_forward",
+    "stop",
+    "sep_optical",
+    "proj_menu",
+    "stereo_menu",
+    "toggle_eye",
+    "fov_menu",
+    "invert_menu",
+    "speed_menu",
+    "sep_tools",
+    "recenter",
+    "flip_x",
+    "flip_y",
+    "hud",
+    "fullscreen",
+    "sep_settings",
+    "customize_context_menu",
+    "customize_toolbar",
+    "patterns",
+    "shortcuts",
+    "about",
+]
+
+DEFAULT_CONTEXT_MENU_VISIBILITY = {
+    "title": True,
+    "open": True,
+    "sep_playback": True,
+    "play_pause": True,
+    "seek_backward": True,
+    "seek_forward": True,
+    "stop": True,
+    "sep_optical": True,
+    "proj_menu": True,
+    "stereo_menu": True,
+    "toggle_eye": True,
+    "fov_menu": True,
+    "invert_menu": True,
+    "speed_menu": True,
+    "sep_tools": True,
+    "recenter": True,
+    "flip_x": True,
+    "flip_y": True,
+    "hud": True,
+    "fullscreen": True,
+    "sep_settings": True,
+    "customize_context_menu": True,
+    "customize_toolbar": True,
+    "patterns": True,
+    "shortcuts": True,
+    "about": True,
+}
+
+CONTEXT_MENU_ITEM_LABELS = {
+    "title": "⚡ Encabezado / Título (OMNIVR PLAYER)",
+    "open": "📂 Abrir Video... (Ctrl+O)",
+    "sep_playback": "── Separador: Reproducción ──",
+    "play_pause": "▶ / ⏸ Reproducir y Pausar (Espacio)",
+    "seek_backward": "⏪ Retroceder 5 segundos (Izq)",
+    "seek_forward": "⏩ Adelantar 5 segundos (Der)",
+    "stop": "⏹ Detener y reiniciar al inicio (Home)",
+    "sep_optical": "── Separador: Óptica y 3D ──",
+    "proj_menu": "📷 Menú de Proyecciones 360 / VR",
+    "stereo_menu": "🕶️ Menú de Modo 3D Estéreo (VR180 / 190 / 360)",
+    "toggle_eye": "👁️ Alternar Ojo Izquierdo ⇄ Derecho (E)",
+    "fov_menu": "🔍 Menú de Campo de Visión (FOV)",
+    "invert_menu": "🔀 Menú de Inversión de Ejes",
+    "speed_menu": "⚡ Menú de Velocidad de Reproducción",
+    "sep_tools": "── Separador: Herramientas ──",
+    "recenter": "🎯 Centrar Vista de Cámara (R)",
+    "flip_x": "⇄ Invertir Horizontal (Espejo)",
+    "flip_y": "⇅ Invertir Vertical",
+    "hud": "ℹ️ HUD / Telemetría OSD en Pantalla (H)",
+    "fullscreen": "⛶ / 🗗 Pantalla Completa (F / F11)",
+    "sep_settings": "── Separador: Configuración ──",
+    "customize_context_menu": "⚙️ Personalizar Menú Clic Derecho...",
+    "customize_toolbar": "⚙️ Personalizar Barra de Controles...",
+    "patterns": "🏷️ Reglas de Nombre de Archivo...",
+    "shortcuts": "⌨️ Atajos de Teclado...",
+    "about": "ℹ️ Acerca de OmniVR Player...",
+}
+
+
+class VRCustomizeContextMenuDialog(QDialog):
+    """
+    Diálogo Glassmorphic para Personalizar y Reordenar el Menú de Clic Derecho (Context Menu).
+    Permite activar, ocultar y reordenar cualquier opción mediante arrastrar y soltar (Drag & Drop)
+    o utilizando los botones Subir / Bajar.
+    """
+    def __init__(self, main_window, parent=None):
+        super().__init__(parent or main_window)
+        self.main_window = main_window
+        self.setWindowTitle("Personalizar y Reordenar Menú de Clic Derecho")
+        self.resize(600, 680)
+        self.setStyleSheet(DARK_STYLESHEET)
+
+        layout = QVBoxLayout(self)
+        layout.setSpacing(12)
+
+        header = QLabel("⚙️ PERSONALIZAR Y REORDENAR MENÚ DE CLIC DERECHO")
+        header.setStyleSheet("font-size: 16px; font-weight: bold; color: #38bdf8;")
+        sub = QLabel(
+            "• Active o desactive las casillas para mostrar u ocultar opciones del menú contextual.<br>"
+            "• <b>Arrastre los elementos</b> con el ratón o use los botones <b>▲ / ▼</b> para cambiar su posición en el menú."
+        )
+        sub.setStyleSheet("color: #94a3b8; font-size: 12px; line-height: 1.4;")
+        layout.addWidget(header)
+        layout.addWidget(sub)
+
+        # Contenedor central: Lista interactiva a la izquierda + Botones de orden a la derecha
+        center_layout = QHBoxLayout()
+        center_layout.setSpacing(12)
+
+        self.list_widget = QListWidget(self)
+        self.list_widget.setDragEnabled(True)
+        self.list_widget.setAcceptDrops(True)
+        self.list_widget.setDropIndicatorShown(True)
+        self.list_widget.setDragDropMode(QAbstractItemView.InternalMove)
+        self.list_widget.setDefaultDropAction(Qt.MoveAction)
+        self.list_widget.setSelectionMode(QAbstractItemView.SingleSelection)
+        self.list_widget.setStyleSheet(
+            "QListWidget {"
+            "    background-color: rgba(15, 23, 42, 0.65);"
+            "    border: 1px solid rgba(255, 255, 255, 0.1);"
+            "    border-radius: 8px;"
+            "    padding: 6px;"
+            "    color: #f1f5f9;"
+            "    font-size: 12px;"
+            "}"
+            "QListWidget::item {"
+            "    background-color: rgba(30, 41, 59, 0.5);"
+            "    border: 1px solid rgba(255, 255, 255, 0.05);"
+            "    border-radius: 6px;"
+            "    padding: 7px 10px;"
+            "    margin-bottom: 3px;"
+            "    color: #f1f5f9;"
+            "}"
+            "QListWidget::item:hover {"
+            "    background-color: rgba(56, 189, 248, 0.15);"
+            "    border: 1px solid rgba(56, 189, 248, 0.3);"
+            "}"
+            "QListWidget::item:selected {"
+            "    background-color: rgba(2, 132, 199, 0.4);"
+            "    border: 1px solid #38bdf8;"
+            "    color: #ffffff;"
+            "}"
+        )
+        center_layout.addWidget(self.list_widget, stretch=1)
+
+        # Panel lateral de botones de reordenación
+        side_layout = QVBoxLayout()
+        side_layout.setSpacing(8)
+
+        lbl_order = QLabel("ORDEN")
+        lbl_order.setStyleSheet("color: #38bdf8; font-weight: bold; font-size: 11px;")
+        side_layout.addWidget(lbl_order)
+
+        btn_top = QPushButton("⤒ Al Inicio")
+        btn_top.setToolTip("Mover la opción seleccionada al principio del menú")
+        btn_top.clicked.connect(self._move_to_top)
+        side_layout.addWidget(btn_top)
+
+        btn_up = QPushButton("▲ Subir")
+        btn_up.setToolTip("Subir una posición")
+        btn_up.clicked.connect(self._move_up)
+        side_layout.addWidget(btn_up)
+
+        btn_down = QPushButton("▼ Bajar")
+        btn_down.setToolTip("Bajar una posición")
+        btn_down.clicked.connect(self._move_down)
+        side_layout.addWidget(btn_down)
+
+        btn_bottom = QPushButton("⤓ Al Final")
+        btn_bottom.setToolTip("Mover la opción seleccionada al final del menú")
+        btn_bottom.clicked.connect(self._move_to_bottom)
+        side_layout.addWidget(btn_bottom)
+
+        side_layout.addSpacing(12)
+
+        lbl_select = QLabel("SELECCIÓN")
+        lbl_select.setStyleSheet("color: #38bdf8; font-weight: bold; font-size: 11px;")
+        side_layout.addWidget(lbl_select)
+
+        btn_select_all = QPushButton("☑ Marcar Todos")
+        btn_select_all.clicked.connect(self._select_all)
+        side_layout.addWidget(btn_select_all)
+
+        btn_deselect_all = QPushButton("☐ Desmarcar Todos")
+        btn_deselect_all.clicked.connect(self._deselect_all)
+        side_layout.addWidget(btn_deselect_all)
+
+        btn_reset = QPushButton("🔄 Predeterminados")
+        btn_reset.setToolTip("Restablecer el orden y visibilidad por defecto")
+        btn_reset.clicked.connect(self._reset_defaults)
+        side_layout.addWidget(btn_reset)
+
+        side_layout.addStretch()
+        center_layout.addLayout(side_layout)
+        layout.addLayout(center_layout)
+
+        # Nota explicativa
+        note_lbl = QLabel(
+            "<span style='color:#94a3b8; font-size:11px;'>"
+            "💡 <b>Nota:</b> Los elementos <b>'── Separador ──'</b> añaden líneas divisorias visuales. "
+            "Puede moverlos o desmarcarlos según su preferencia."
+            "</span>"
+        )
+        note_lbl.setWordWrap(True)
+        layout.addWidget(note_lbl)
+
+        # Botones inferiores (Cancelar, Guardar)
+        btns_layout = QHBoxLayout()
+        btns_layout.addStretch()
+        btn_cancel = QPushButton("Cancelar")
+        btn_cancel.clicked.connect(self.reject)
+        btns_layout.addWidget(btn_cancel)
+
+        btn_save = QPushButton("Guardar y Aplicar")
+        btn_save.setObjectName("primaryBtn")
+        btn_save.clicked.connect(self._save_and_apply)
+        btns_layout.addWidget(btn_save)
+        layout.addLayout(btns_layout)
+
+        self._populate_list()
+
+    def _populate_list(self):
+        order, visibility = self.main_window._load_context_menu_config()
+        self.list_widget.clear()
+        for key in order:
+            label = CONTEXT_MENU_ITEM_LABELS.get(key, key)
+            is_vis = visibility.get(key, DEFAULT_CONTEXT_MENU_VISIBILITY.get(key, True))
+            item = QListWidgetItem(label)
+            item.setData(Qt.UserRole, key)
+            item.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable | Qt.ItemIsUserCheckable | Qt.ItemIsDragEnabled)
+            item.setCheckState(Qt.Checked if is_vis else Qt.Unchecked)
+            self.list_widget.addItem(item)
+
+    def _move_up(self):
+        row = self.list_widget.currentRow()
+        if row > 0:
+            item = self.list_widget.takeItem(row)
+            self.list_widget.insertItem(row - 1, item)
+            self.list_widget.setCurrentRow(row - 1)
+
+    def _move_down(self):
+        row = self.list_widget.currentRow()
+        if 0 <= row < self.list_widget.count() - 1:
+            item = self.list_widget.takeItem(row)
+            self.list_widget.insertItem(row + 1, item)
+            self.list_widget.setCurrentRow(row + 1)
+
+    def _move_to_top(self):
+        row = self.list_widget.currentRow()
+        if row > 0:
+            item = self.list_widget.takeItem(row)
+            self.list_widget.insertItem(0, item)
+            self.list_widget.setCurrentRow(0)
+
+    def _move_to_bottom(self):
+        row = self.list_widget.currentRow()
+        if 0 <= row < self.list_widget.count() - 1:
+            item = self.list_widget.takeItem(row)
+            self.list_widget.insertItem(self.list_widget.count(), item)
+            self.list_widget.setCurrentRow(self.list_widget.count() - 1)
+
+    def _select_all(self):
+        for i in range(self.list_widget.count()):
+            self.list_widget.item(i).setCheckState(Qt.Checked)
+
+    def _deselect_all(self):
+        for i in range(self.list_widget.count()):
+            self.list_widget.item(i).setCheckState(Qt.Unchecked)
+
+    def _reset_defaults(self):
+        self.list_widget.clear()
+        for key in DEFAULT_CONTEXT_MENU_ORDER:
+            label = CONTEXT_MENU_ITEM_LABELS.get(key, key)
+            is_vis = DEFAULT_CONTEXT_MENU_VISIBILITY.get(key, True)
+            item = QListWidgetItem(label)
+            item.setData(Qt.UserRole, key)
+            item.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable | Qt.ItemIsUserCheckable | Qt.ItemIsDragEnabled)
+            item.setCheckState(Qt.Checked if is_vis else Qt.Unchecked)
+            self.list_widget.addItem(item)
+
+    def _save_and_apply(self):
+        new_order = []
+        new_visibility = {}
+        for i in range(self.list_widget.count()):
+            item = self.list_widget.item(i)
+            key = item.data(Qt.UserRole)
+            new_order.append(key)
+            new_visibility[key] = (item.checkState() == Qt.Checked)
+
+        self.main_window._save_context_menu_config(new_order, new_visibility)
+        self.accept()
+
+
 class VRShortcutsDialog(QDialog):
     """
     Diálogo Glassmorphic de Atajos de Teclado y Controles con alto contraste
@@ -1035,6 +1627,9 @@ class VRShortcutsDialog(QDialog):
                 ("Flechas Arr / Abj", "Subir / Bajar volumen (+/- 5%)"),
                 ("M", "Silenciar / Activar sonido (Mute)"),
             ]),
+            ("🕶️ Modo Estéreo 3D & Selección de Ojo", [
+                ("E", "Alternar Ojo Izquierdo ⇄ Ojo Derecho al instante (sin afectar reproducción)"),
+            ]),
             ("📷 Proyecciones Ópticas & Orientación", [
                 ("P", "Rotar cíclicamente la proyección (Rectilíneo → Planet → Fisheye → Panini → 360)"),
                 ("1 - 5", "Selección directa de proyección (1: Rectilíneo, 2: Planet, 3: Fisheye, 4: Panini, 5: 360)"),
@@ -1050,9 +1645,11 @@ class VRShortcutsDialog(QDialog):
                 ("Rueda del Ratón", "Zoom dinámico continuo del campo de visión (FOV)"),
             ]),
             ("🖱️ Control Interactivo con Ratón", [
+                ("Clic Izquierdo", "Pausar / Reanudar reproducción (un solo clic sin arrastre)"),
                 ("Arrastre Clic Izq", "Rotar ángulo de vista 360° en la esfera (Yaw y Pitch)"),
                 ("Arrastre Clic Der", "Inclinación angular de cámara (Roll horizontal)"),
-                ("Clic Derecho", "Abrir Menú Contextual completo (inmune a DirectFlip)"),
+                ("Clic Derecho", "Abrir Menú Contextual (100% personalizable y reordenable)"),
+                ("Clic Der en Barra", "Personalizar y reordenar botones de la barra inferior"),
                 ("Doble Clic Izq", "Alternar Pantalla Completa"),
             ])
         ]
@@ -1197,7 +1794,42 @@ class VRInViewportToolTip(QFrame):
         self.raise_()
         self.show()
 
+    def show_osd_message(self, text, duration_ms=1800):
+        """Muestra un mensaje de telemetría/notificación flotante temporalmente centrado en pantalla."""
+        if not text:
+            self.hide()
+            return
+        self.label.setText(text)
+        self.adjustSize()
+
+        parent = self.parentWidget()
+        if not parent:
+            return
+
+        w = self.width()
+        h = self.height()
+        x = (parent.width() - w) // 2
+        y = 36
+        self.setGeometry(x, y, w, h)
+        self.raise_()
+        self.show()
+
+        self._osd_active = True
+        if hasattr(self, '_osd_timer') and self._osd_timer:
+            self._osd_timer.stop()
+        self._osd_timer = QTimer(self)
+        self._osd_timer.setSingleShot(True)
+
+        def _on_timeout():
+            self._osd_active = False
+            self.hide()
+
+        self._osd_timer.timeout.connect(_on_timeout)
+        self._osd_timer.start(duration_ms)
+
     def hide_tip(self):
+        if getattr(self, '_osd_active', False):
+            return
         self.hide()
 
 
@@ -1638,11 +2270,31 @@ class VRMainWindow(QMainWindow):
 
         stereo_menu.addSeparator()
 
+        self.eye_group = QActionGroup(self)
+        self.eye_group.setExclusive(True)
+
+        self.act_eye_left = stereo_menu.addAction("👁️ Ojo Izquierdo")
+        self.act_eye_left.setCheckable(True)
+        self.act_eye_left.setChecked(True)
+        self.eye_group.addAction(self.act_eye_left)
+        self.act_eye_left.triggered.connect(self._select_left_eye)
+
+        self.act_eye_right = stereo_menu.addAction("👁️ Ojo Derecho")
+        self.act_eye_right.setCheckable(True)
+        self.eye_group.addAction(self.act_eye_right)
+        self.act_eye_right.triggered.connect(self._select_right_eye)
+
+        self.act_toggle_eye = stereo_menu.addAction("🔄 Alternar Ojo (Izq ⇄ Der)")
+        self.act_toggle_eye.setShortcut(QKeySequence(Qt.Key_E))
+        self.act_toggle_eye.triggered.connect(self._toggle_stereo_eye)
+
+        stereo_menu.addSeparator()
+
         self.act_stereo_dual = stereo_menu.addAction("👓 Dual Estéreo (Visor VR / HMD)")
         self.act_stereo_dual.setCheckable(True)
         self.act_stereo_dual.triggered.connect(self._toggle_dual_stereo)
 
-        self.act_stereo_invert = stereo_menu.addAction("🔄 Invertir Ojos (Der / Izq)")
+        self.act_stereo_invert = stereo_menu.addAction("🔄 Invertir Canales Dual (Der / Izq)")
         self.act_stereo_invert.setCheckable(True)
         self.act_stereo_invert.triggered.connect(self._toggle_invert_eyes)
 
@@ -1725,6 +2377,12 @@ class VRMainWindow(QMainWindow):
             a.triggered.connect(lambda chk=False, m=q_mode: self.viewport.set_quality_mode(m))
 
         view_menu.addSeparator()
+        act_cust_toolbar = view_menu.addAction("⚙️ Personalizar y Reordenar Barra de Controles...")
+        act_cust_toolbar.triggered.connect(self._show_customize_toolbar_dialog)
+
+        act_cust_context_menu = view_menu.addAction("⚙️ Personalizar Menú de Clic Derecho...")
+        act_cust_context_menu.triggered.connect(self._show_customize_context_menu_dialog)
+
         act_patterns = view_menu.addAction("🏷️ Configurar Detección por Nombre de Archivo...")
         act_patterns.triggered.connect(self._show_patterns_dialog)
 
@@ -1742,11 +2400,17 @@ class VRMainWindow(QMainWindow):
             act_open, act_open_url, act_exit, self.act_play_pause,
             act_prev5, act_next5, act_prev10, act_next10, act_restart,
             self.act_loop, self.act_cycle_proj, act_recenter,
-            self.act_inv_both, self.act_hud_toggle, self.act_fs
+            self.act_inv_both, self.act_hud_toggle, self.act_fs,
+            self.act_toggle_eye
         ]:
             self.addAction(action)
         for act in self.proj_actions.values():
             self.addAction(act)
+
+    def show_osd_banner(self, text, duration_ms=1800):
+        """Muestra un banner OSD flotante estilizado en pantalla sin interrumpir la reproducción."""
+        if hasattr(self, 'in_viewport_tooltip') and self.in_viewport_tooltip:
+            self.in_viewport_tooltip.show_osd_message(text, duration_ms)
 
     def _build_hud_pill(self):
         pill = QFrame(self.viewport)
@@ -1855,6 +2519,7 @@ class VRMainWindow(QMainWindow):
         # -------------------------------------------------------------
         controls_layout = QHBoxLayout()
         controls_layout.setSpacing(6)
+        self.controls_layout = controls_layout
 
         # 1. Botón Abrir Archivo
         self.btn_open = QToolButton(bar)
@@ -1862,26 +2527,22 @@ class VRMainWindow(QMainWindow):
         self.btn_open.setText("📁")
         self.btn_open.setToolTip("Abrir archivo de video (Ctrl+O)")
         self.btn_open.clicked.connect(self._open_file_dialog)
-        controls_layout.addWidget(self.btn_open)
 
         # 2. Botón Retroceder 5s
         self.btn_prev5 = QPushButton("⏪ 5s", bar)
         self.btn_prev5.setToolTip("Retroceder 5 segundos (Flecha Izq)")
         self.btn_prev5.clicked.connect(lambda: self.backend.seek(-5, absolute=False))
-        controls_layout.addWidget(self.btn_prev5)
 
         # 3. Botón Play / Pause Circular Grande
         self.btn_play = QPushButton("▶", bar)
         self.btn_play.setObjectName("playButton")
         self.btn_play.setToolTip("Reproducir / Pausar (Espacio)")
         self.btn_play.clicked.connect(self.backend.toggle_play)
-        controls_layout.addWidget(self.btn_play)
 
         # 4. Botón Adelantar 5s
         self.btn_next5 = QPushButton("5s ⏩", bar)
         self.btn_next5.setToolTip("Adelantar 5 segundos (Flecha Der)")
         self.btn_next5.clicked.connect(lambda: self.backend.seek(5, absolute=False))
-        controls_layout.addWidget(self.btn_next5)
 
         # 5. Botón Detener / Inicio
         self.btn_stop = QToolButton(bar)
@@ -1889,9 +2550,6 @@ class VRMainWindow(QMainWindow):
         self.btn_stop.setText("⏹")
         self.btn_stop.setToolTip("Reiniciar al inicio (Home)")
         self.btn_stop.clicked.connect(lambda: self.backend.seek(0, absolute=True))
-        controls_layout.addWidget(self.btn_stop)
-
-        controls_layout.addSpacing(6)
 
         # 6. Control de Volumen con Mute
         self.btn_volume = QToolButton(bar)
@@ -1899,7 +2557,6 @@ class VRMainWindow(QMainWindow):
         self.btn_volume.setText("🔊")
         self.btn_volume.setToolTip("Silenciar / Activar sonido (M)")
         self.btn_volume.clicked.connect(self._toggle_mute)
-        controls_layout.addWidget(self.btn_volume)
 
         self.vol_slider = ClickableSlider(Qt.Horizontal, bar)
         self.vol_slider.setObjectName("volSlider")
@@ -1908,9 +2565,6 @@ class VRMainWindow(QMainWindow):
         self.vol_slider.setFixedWidth(75)
         self.vol_slider.setToolTip("Volumen: 100%")
         self.vol_slider.valueChanged.connect(self._on_volume_changed)
-        controls_layout.addWidget(self.vol_slider)
-
-        controls_layout.addSpacing(8)
 
         # 7. Menú Proyecciones (GoPro VR Player Style)
         self.btn_proj_menu = QToolButton(bar)
@@ -1918,7 +2572,6 @@ class VRMainWindow(QMainWindow):
         self.btn_proj_menu.setText("📷 Proyección ▾")
         self.btn_proj_menu.setToolTip("Seleccionar proyección 360 / VR (Teclas 1 - 5, o P para rotar)")
         self.btn_proj_menu.clicked.connect(self._show_proj_menu)
-        controls_layout.addWidget(self.btn_proj_menu)
 
         # 8. Menú Modo 3D Estereoscópico (Sin anaglifo)
         self.btn_stereo_menu = QToolButton(bar)
@@ -1926,7 +2579,6 @@ class VRMainWindow(QMainWindow):
         self.btn_stereo_menu.setText("🕶️ 3D ▾")
         self.btn_stereo_menu.setToolTip("Seleccionar modo estereoscópico VR180 / 360")
         self.btn_stereo_menu.clicked.connect(self._show_stereo_menu)
-        controls_layout.addWidget(self.btn_stereo_menu)
 
         # 9. Menú Velocidad
         self.btn_speed_menu = QToolButton(bar)
@@ -1934,7 +2586,6 @@ class VRMainWindow(QMainWindow):
         self.btn_speed_menu.setText("⚡ 1.0x ▾")
         self.btn_speed_menu.setToolTip("Velocidad de reproducción")
         self.btn_speed_menu.clicked.connect(self._show_speed_menu)
-        controls_layout.addWidget(self.btn_speed_menu)
 
         # 10. Control de FOV (Campo de Visión) Personalizable
         self.btn_fov = QToolButton(bar)
@@ -1942,44 +2593,46 @@ class VRMainWindow(QMainWindow):
         self.btn_fov.setText("🔍 90° ▾")
         self.btn_fov.setToolTip("Campo de visión (FOV) / Zoom (+ / - / 0)")
         self.btn_fov.clicked.connect(self._show_fov_menu)
-        controls_layout.addWidget(self.btn_fov)
 
-        controls_layout.addStretch()
-
-        # 10. Botones de acción derecha (Iconos individuales)
+        # 11. Botón Repetición en bucle
         self.btn_loop = QToolButton(bar)
         self.btn_loop.setObjectName("iconBtn")
         self.btn_loop.setText("🔁")
         self.btn_loop.setCheckable(True)
         self.btn_loop.setToolTip("Repetición en bucle (Ctrl+L)")
         self.btn_loop.toggled.connect(self._set_loop_state)
-        controls_layout.addWidget(self.btn_loop)
 
+        # 12. Botón Centrar cámara
         self.btn_recenter = QToolButton(bar)
         self.btn_recenter.setObjectName("iconBtn")
         self.btn_recenter.setText("🎯")
         self.btn_recenter.setToolTip("Restablecer orientación de cámara (R)")
         self.btn_recenter.clicked.connect(self.viewport.recenter_view)
-        controls_layout.addWidget(self.btn_recenter)
 
+        # 13. Botón Alternar Ojo Izquierdo ⇄ Derecho (Eye Toggle)
+        self.btn_toggle_eye = QToolButton(bar)
+        self.btn_toggle_eye.setObjectName("iconBtn")
+        self.btn_toggle_eye.setText("👁️")
+        self.btn_toggle_eye.setToolTip("Alternar Ojo Izquierdo ⇄ Derecho (E)")
+        self.btn_toggle_eye.clicked.connect(self._toggle_stereo_eye)
+
+        # 14. Botón Rotación Automática
         self.btn_orbit = QToolButton(bar)
         self.btn_orbit.setObjectName("iconBtn")
         self.btn_orbit.setText("🔄")
         self.btn_orbit.setCheckable(True)
         self.btn_orbit.setToolTip("Activar rotación automática 360°")
         self.btn_orbit.toggled.connect(self._toggle_auto_orbit)
-        controls_layout.addWidget(self.btn_orbit)
 
-        # Botón Inverted Axes con Menú Desplegable H/V separado
+        # 15. Botón Inversión de Ejes
         self.btn_invert_axes = QToolButton(bar)
         self.btn_invert_axes.setObjectName("iconBtn")
         self.btn_invert_axes.setText("🔀")
         self.btn_invert_axes.setCheckable(True)
         self.btn_invert_axes.setToolTip("Inversión de ejes (I)")
         self.btn_invert_axes.clicked.connect(self._show_invert_menu)
-        controls_layout.addWidget(self.btn_invert_axes)
 
-        # Botón HUD Telemetría (Default No Marcado)
+        # 16. Botón HUD Telemetría
         self.btn_hud_btn = QToolButton(bar)
         self.btn_hud_btn.setObjectName("iconBtn")
         self.btn_hud_btn.setText("ℹ️")
@@ -1987,39 +2640,187 @@ class VRMainWindow(QMainWindow):
         self.btn_hud_btn.setChecked(False)
         self.btn_hud_btn.setToolTip("Mostrar/Ocultar OSD y Telemetría (H)")
         self.btn_hud_btn.clicked.connect(self._toggle_hud)
-        controls_layout.addWidget(self.btn_hud_btn)
 
+        # 17. Invertir orientación horizontal
         self.btn_flip_x_btn = QToolButton(bar)
         self.btn_flip_x_btn.setObjectName("iconBtn")
         self.btn_flip_x_btn.setText("⇄")
         self.btn_flip_x_btn.setCheckable(True)
         self.btn_flip_x_btn.setToolTip("Invertir orientación horizontal de imagen (Espejo)")
         self.btn_flip_x_btn.toggled.connect(self._toggle_flip_x)
-        controls_layout.addWidget(self.btn_flip_x_btn)
 
+        # 18. Invertir orientación vertical
         self.btn_flip_btn = QToolButton(bar)
         self.btn_flip_btn.setObjectName("iconBtn")
         self.btn_flip_btn.setText("⇅")
         self.btn_flip_btn.setCheckable(True)
         self.btn_flip_btn.setToolTip("Invertir orientación vertical de imagen")
         self.btn_flip_btn.toggled.connect(self._toggle_flip_y)
-        controls_layout.addWidget(self.btn_flip_btn)
 
+        # 19. Pantalla Completa
         self.btn_fullscreen = QToolButton(bar)
         self.btn_fullscreen.setObjectName("iconBtn")
         self.btn_fullscreen.setText("⛶")
         self.btn_fullscreen.setToolTip("Pantalla completa (F / F11)")
         self.btn_fullscreen.clicked.connect(self._toggle_fullscreen)
-        controls_layout.addWidget(self.btn_fullscreen)
 
-        # Badge GPU 8K
+        # 20. Badge GPU 8K
         self.badge_label = QLabel("⚡ 8K NVDEC", bar)
         self.badge_label.setObjectName("badgeLabel")
-        controls_layout.addWidget(self.badge_label)
 
-        main_layout.addLayout(controls_layout)
+        # Disponer widgets en el layout según configuración de orden y visibilidad
+        self._apply_toolbar_layout()
+
+        main_layout.addLayout(self.controls_layout)
         self._install_tooltip_filter(bar)
+
+        # Context menu para personalizar la barra con clic derecho
+        bar.setContextMenuPolicy(Qt.CustomContextMenu)
+        bar.customContextMenuRequested.connect(self._show_toolbar_context_menu)
+
         return bar
+
+    def _load_toolbar_config(self):
+        saved_order = self.settings.value("toolbar_order", None)
+        saved_vis = self.settings.value("toolbar_visibility", None)
+
+        # 1. Cargar Orden
+        order = list(DEFAULT_TOOLBAR_ORDER)
+        if isinstance(saved_order, str):
+            try:
+                parsed = json.loads(saved_order)
+                if isinstance(parsed, list):
+                    saved_order = parsed
+            except Exception:
+                saved_order = None
+
+        if isinstance(saved_order, list):
+            valid_keys = set(DEFAULT_TOOLBAR_ORDER)
+            order = [k for k in saved_order if k in valid_keys]
+            # Asegurar que cualquier control que falte se agregue al final
+            for k in DEFAULT_TOOLBAR_ORDER:
+                if k not in order:
+                    order.append(k)
+
+        # 2. Cargar Visibilidad
+        vis = dict(DEFAULT_TOOLBAR_VISIBILITY)
+        if isinstance(saved_vis, str):
+            try:
+                parsed_v = json.loads(saved_vis)
+                if isinstance(parsed_v, dict):
+                    saved_vis = parsed_v
+            except Exception:
+                saved_vis = None
+
+        if isinstance(saved_vis, dict):
+            vis.update(saved_vis)
+
+        return order, vis
+
+    def _save_toolbar_config(self, order, visibility):
+        self.settings.setValue("toolbar_order", json.dumps(order))
+        self.settings.setValue("toolbar_visibility", json.dumps(visibility))
+        self.settings.sync()
+        self._apply_toolbar_layout(order, visibility)
+        self.show_osd_banner("⚙️ Barra de controles actualizada")
+
+    def _apply_toolbar_layout(self, order=None, visibility=None):
+        if not hasattr(self, 'controls_layout') or self.controls_layout is None:
+            return
+        if order is None or visibility is None:
+            loaded_order, loaded_vis = self._load_toolbar_config()
+            if order is None:
+                order = loaded_order
+            if visibility is None:
+                visibility = loaded_vis
+
+        # Limpiar todos los items del layout (sin destruir los widgets)
+        while self.controls_layout.count() > 0:
+            self.controls_layout.takeAt(0)
+
+        # Re-agregar en el orden especificado por el usuario
+        for key in order:
+            is_vis = visibility.get(key, DEFAULT_TOOLBAR_VISIBILITY.get(key, True))
+            if key == "spacer":
+                if is_vis:
+                    self.controls_layout.addStretch()
+            elif key == "volume_group":
+                if hasattr(self, 'btn_volume') and hasattr(self, 'vol_slider'):
+                    self.btn_volume.setVisible(bool(is_vis))
+                    self.vol_slider.setVisible(bool(is_vis))
+                    self.controls_layout.addWidget(self.btn_volume)
+                    self.controls_layout.addWidget(self.vol_slider)
+            else:
+                w = getattr(self, key, None)
+                if w is not None:
+                    w.setVisible(bool(is_vis))
+                    self.controls_layout.addWidget(w)
+
+    def _load_toolbar_visibility(self):
+        _, vis = self._load_toolbar_config()
+        return vis
+
+    def _save_toolbar_visibility(self, vis):
+        order, _ = self._load_toolbar_config()
+        self._save_toolbar_config(order, vis)
+
+    def _apply_toolbar_visibility(self, vis=None):
+        self._apply_toolbar_layout(visibility=vis)
+
+    def _show_toolbar_context_menu(self, pos):
+        menu = QMenu(self)
+        menu.setStyleSheet(DARK_STYLESHEET)
+        act = menu.addAction("⚙️ Personalizar y Reordenar Barra...")
+        act.triggered.connect(self._show_customize_toolbar_dialog)
+        menu.exec(self.bottom_bar.mapToGlobal(pos))
+
+    def _show_customize_toolbar_dialog(self):
+        dlg = VRCustomizeToolbarDialog(self, self)
+        dlg.exec()
+
+    def _load_context_menu_config(self):
+        saved_order = self.settings.value("context_menu_order", None)
+        saved_vis = self.settings.value("context_menu_visibility", None)
+
+        order = list(DEFAULT_CONTEXT_MENU_ORDER)
+        if isinstance(saved_order, str):
+            try:
+                parsed = json.loads(saved_order)
+                if isinstance(parsed, list):
+                    saved_order = parsed
+            except Exception:
+                saved_order = None
+
+        if isinstance(saved_order, list):
+            valid_keys = set(DEFAULT_CONTEXT_MENU_ORDER)
+            order = [k for k in saved_order if k in valid_keys]
+            for k in DEFAULT_CONTEXT_MENU_ORDER:
+                if k not in order:
+                    order.append(k)
+
+        vis = dict(DEFAULT_CONTEXT_MENU_VISIBILITY)
+        if isinstance(saved_vis, str):
+            try:
+                parsed_v = json.loads(saved_vis)
+                if isinstance(parsed_v, dict):
+                    saved_vis = parsed_v
+            except Exception:
+                saved_vis = None
+
+        if isinstance(saved_vis, dict):
+            vis.update(saved_vis)
+
+        return order, vis
+
+    def _save_context_menu_config(self, order, visibility):
+        self.settings.setValue("context_menu_order", json.dumps(order))
+        self.settings.setValue("context_menu_visibility", json.dumps(visibility))
+        self.settings.sync()
+        self.show_osd_banner("⚙️ Menú de clic derecho actualizado")
+
+    def _show_customize_context_menu_dialog(self):
+        dlg = VRCustomizeContextMenuDialog(self, self)
+        dlg.exec()
 
     # -----------------------------------------------------------------
     # Desplegables de la Barra Inferior (In-Viewport VROverlayMenu)
@@ -2087,11 +2888,17 @@ class VRMainWindow(QMainWindow):
         menu.add_separator()
         menu.add_action("🕶️ VR 180° SBS", self._set_vr180_preset, checked=is_180)
         menu.add_action("🕶️ VR 190° SBS", self._set_vr190_preset, checked=is_190)
-        menu.add_action("🕶️ 360° SBS", lambda: self._set_stereo_mode(VRGLWidget.STEREO_360_SBS_LEFT), checked=is_360_sbs)
-        menu.add_action("🕶️ 360° Over-Under", lambda: self._set_stereo_mode(VRGLWidget.STEREO_360_OU_TOP), checked=is_360_ou)
+        menu.add_action("🕶️ 360° SBS", lambda: self._set_stereo_mode(VRGLWidget.STEREO_360_SBS_RIGHT if self._is_right_eye_selected() else VRGLWidget.STEREO_360_SBS_LEFT), checked=is_360_sbs)
+        menu.add_action("🕶️ 360° Over-Under", lambda: self._set_stereo_mode(VRGLWidget.STEREO_360_OU_BOTTOM if self._is_right_eye_selected() else VRGLWidget.STEREO_360_OU_TOP), checked=is_360_ou)
+        menu.add_separator()
+        is_left = (cur_s in [VRGLWidget.STEREO_VR180_SBS_LEFT, VRGLWidget.STEREO_360_SBS_LEFT, VRGLWidget.STEREO_360_OU_TOP])
+        is_right = (cur_s in [VRGLWidget.STEREO_VR180_SBS_RIGHT, VRGLWidget.STEREO_360_SBS_RIGHT, VRGLWidget.STEREO_360_OU_BOTTOM])
+        menu.add_action("👁️ Ojo Izquierdo", self._select_left_eye, checked=is_left)
+        menu.add_action("👁️ Ojo Derecho", self._select_right_eye, checked=is_right)
+        menu.add_action("🔄 Alternar Ojo (Izq ⇄ Der)", self._toggle_stereo_eye, shortcut="E")
         menu.add_separator()
         menu.add_action("👓 Dual Estéreo (Visor VR / HMD)", self._toggle_dual_stereo, checked=is_dual)
-        menu.add_action("🔄 Invertir Ojos (Der / Izq)", self._toggle_invert_eyes, checked=is_inv)
+        menu.add_action("🔄 Invertir Canales en Dual", self._toggle_invert_eyes, checked=is_inv)
 
     def _build_speed_menu(self, menu):
         menu.add_title("⚡ VELOCIDAD DE REPRODUCCIÓN")
@@ -2134,31 +2941,111 @@ class VRMainWindow(QMainWindow):
         menu.add_action("Invertir Ambos Ejes", self._toggle_invert_both, shortcut="I")
 
     def _build_context_menu(self, menu):
-        menu.add_title("⚡ OMNIVR PLAYER")
-        menu.add_action("📂 Abrir Video...", self._open_file_dialog, shortcut="Ctrl+O")
-        menu.add_separator()
-        p_text = "⏸ Pausar" if not self.backend.is_paused else "▶ Reproducir"
-        menu.add_action(p_text, self.backend.toggle_play, shortcut="Espacio")
-        menu.add_action("⏪ -5 seg", lambda: self.backend.seek(-5, absolute=False), shortcut="Izq")
-        menu.add_action("⏩ +5 seg", lambda: self.backend.seek(5, absolute=False), shortcut="Der")
-        menu.add_action("⏹ Reiniciar al inicio", lambda: self.backend.seek(0, absolute=True), shortcut="Home")
-        menu.add_separator()
-        menu.add_sub_nav("📷 Proyección", self._build_proj_menu)
-        menu.add_sub_nav("🕶️ Modo 3D Estéreo", self._build_stereo_menu)
-        menu.add_sub_nav("🔍 Campo de Visión (FOV)", self._build_fov_menu)
-        menu.add_sub_nav("🔀 Inversión de Ejes", self._build_invert_menu)
-        menu.add_sub_nav("⚡ Velocidad", self._build_speed_menu)
-        menu.add_separator()
-        menu.add_action("🎯 Centrar Vista", self.viewport.recenter_view, shortcut="R")
-        menu.add_action("⇄ Invertir Orientación Horizontal (Espejo)", self._toggle_flip_x, checked=bool(self.viewport.flip_x))
-        menu.add_action("⇅ Invertir Orientación Vertical", self._toggle_flip_y, checked=bool(self.viewport.flip_y))
-        menu.add_action("ℹ️ HUD / Telemetría OSD", self._toggle_hud, checked=self.hud_pill.isVisible(), shortcut="H")
-        fs_text = "🗗 Salir de Pantalla Completa" if self.isFullScreen() else "⛶ Pantalla Completa"
-        menu.add_action(fs_text, self._toggle_fullscreen, shortcut="F")
-        menu.add_separator()
-        menu.add_action("🏷️ Patrones de Nombre de Archivo...", self._show_patterns_dialog)
-        menu.add_action("⌨️ Atajos de Teclado...", self._show_shortcuts_dialog)
-        menu.add_action("ℹ️ Acerca de OmniVR Player...", self._show_about_dialog)
+        order, vis = self._load_context_menu_config()
+
+        has_added_any = False
+        last_was_separator = True  # Evitar separador al principio
+
+        for key in order:
+            if not vis.get(key, DEFAULT_CONTEXT_MENU_VISIBILITY.get(key, True)):
+                continue
+
+            if key == "title":
+                menu.add_title("⚡ OMNIVR PLAYER")
+                has_added_any = True
+                last_was_separator = False
+            elif key.startswith("sep_"):
+                if has_added_any and not last_was_separator:
+                    menu.add_separator()
+                    last_was_separator = True
+            elif key == "open":
+                menu.add_action("📂 Abrir Video...", self._open_file_dialog, shortcut="Ctrl+O")
+                has_added_any = True
+                last_was_separator = False
+            elif key == "play_pause":
+                p_text = "⏸ Pausar" if not self.backend.is_paused else "▶ Reproducir"
+                menu.add_action(p_text, self.backend.toggle_play, shortcut="Espacio")
+                has_added_any = True
+                last_was_separator = False
+            elif key == "seek_backward":
+                menu.add_action("⏪ -5 seg", lambda: self.backend.seek(-5, absolute=False), shortcut="Izq")
+                has_added_any = True
+                last_was_separator = False
+            elif key == "seek_forward":
+                menu.add_action("⏩ +5 seg", lambda: self.backend.seek(5, absolute=False), shortcut="Der")
+                has_added_any = True
+                last_was_separator = False
+            elif key == "stop":
+                menu.add_action("⏹ Reiniciar al inicio", lambda: self.backend.seek(0, absolute=True), shortcut="Home")
+                has_added_any = True
+                last_was_separator = False
+            elif key == "proj_menu":
+                menu.add_sub_nav("📷 Proyección", self._build_proj_menu)
+                has_added_any = True
+                last_was_separator = False
+            elif key == "stereo_menu":
+                menu.add_sub_nav("🕶️ Modo 3D Estéreo", self._build_stereo_menu)
+                has_added_any = True
+                last_was_separator = False
+            elif key == "toggle_eye":
+                is_right = self._is_right_eye_selected()
+                eye_text = "👁️ Alternar a Ojo Izquierdo" if is_right else "👁️ Alternar a Ojo Derecho"
+                menu.add_action(eye_text, self._toggle_stereo_eye, shortcut="E")
+                has_added_any = True
+                last_was_separator = False
+            elif key == "fov_menu":
+                menu.add_sub_nav("🔍 Campo de Visión (FOV)", self._build_fov_menu)
+                has_added_any = True
+                last_was_separator = False
+            elif key == "invert_menu":
+                menu.add_sub_nav("🔀 Inversión de Ejes", self._build_invert_menu)
+                has_added_any = True
+                last_was_separator = False
+            elif key == "speed_menu":
+                menu.add_sub_nav("⚡ Velocidad", self._build_speed_menu)
+                has_added_any = True
+                last_was_separator = False
+            elif key == "recenter":
+                menu.add_action("🎯 Centrar Vista", self.viewport.recenter_view, shortcut="R")
+                has_added_any = True
+                last_was_separator = False
+            elif key == "flip_x":
+                menu.add_action("⇄ Invertir Orientación Horizontal (Espejo)", self._toggle_flip_x, checked=bool(self.viewport.flip_x))
+                has_added_any = True
+                last_was_separator = False
+            elif key == "flip_y":
+                menu.add_action("⇅ Invertir Orientación Vertical", self._toggle_flip_y, checked=bool(self.viewport.flip_y))
+                has_added_any = True
+                last_was_separator = False
+            elif key == "hud":
+                menu.add_action("ℹ️ HUD / Telemetría OSD", self._toggle_hud, checked=self.hud_pill.isVisible(), shortcut="H")
+                has_added_any = True
+                last_was_separator = False
+            elif key == "fullscreen":
+                fs_text = "🗗 Salir de Pantalla Completa" if self.isFullScreen() else "⛶ Pantalla Completa"
+                menu.add_action(fs_text, self._toggle_fullscreen, shortcut="F")
+                has_added_any = True
+                last_was_separator = False
+            elif key == "customize_context_menu":
+                menu.add_action("⚙️ Personalizar Menú Clic Derecho...", self._show_customize_context_menu_dialog)
+                has_added_any = True
+                last_was_separator = False
+            elif key == "customize_toolbar":
+                menu.add_action("⚙️ Personalizar Barra de Controles...", self._show_customize_toolbar_dialog)
+                has_added_any = True
+                last_was_separator = False
+            elif key == "patterns":
+                menu.add_action("🏷️ Patrones de Nombre de Archivo...", self._show_patterns_dialog)
+                has_added_any = True
+                last_was_separator = False
+            elif key == "shortcuts":
+                menu.add_action("⌨️ Atajos de Teclado...", self._show_shortcuts_dialog)
+                has_added_any = True
+                last_was_separator = False
+            elif key == "about":
+                menu.add_action("ℹ️ Acerca de OmniVR Player...", self._show_about_dialog)
+                has_added_any = True
+                last_was_separator = False
 
     def _dialog_custom_fov(self):
         cur_fov = int(round(math.degrees(self.viewport.fov)))
@@ -2204,6 +3091,96 @@ class VRMainWindow(QMainWindow):
                 act.setChecked(m == model)
         self._update_hud()
 
+    def _is_right_eye_selected(self):
+        """Devuelve True si actualmente se está visualizando el ojo derecho (o inferior en OU)."""
+        return self.viewport.stereo_mode in [
+            VRGLWidget.STEREO_VR180_SBS_RIGHT,
+            VRGLWidget.STEREO_360_SBS_RIGHT,
+            VRGLWidget.STEREO_360_OU_BOTTOM,
+            VRGLWidget.STEREO_VR180_SBS_INVERTED,
+            VRGLWidget.STEREO_360_SBS_INVERTED,
+            VRGLWidget.STEREO_360_OU_INVERTED
+        ]
+
+    def _select_left_eye(self):
+        """Selecciona el ojo izquierdo (o superior en 360 OU) de forma inmediata en GPU."""
+        cur = self.viewport.stereo_mode
+        if cur == VRGLWidget.STEREO_VR180_SBS_RIGHT:
+            self._set_stereo_mode(VRGLWidget.STEREO_VR180_SBS_LEFT)
+        elif cur == VRGLWidget.STEREO_360_SBS_RIGHT:
+            self._set_stereo_mode(VRGLWidget.STEREO_360_SBS_LEFT)
+        elif cur == VRGLWidget.STEREO_360_OU_BOTTOM:
+            self._set_stereo_mode(VRGLWidget.STEREO_360_OU_TOP)
+        elif cur == VRGLWidget.STEREO_VR180_SBS_INVERTED:
+            self._set_stereo_mode(VRGLWidget.STEREO_VR180_SBS_DUAL)
+        elif cur == VRGLWidget.STEREO_360_SBS_INVERTED:
+            self._set_stereo_mode(VRGLWidget.STEREO_360_SBS_DUAL)
+        elif cur == VRGLWidget.STEREO_360_OU_INVERTED:
+            self._set_stereo_mode(VRGLWidget.STEREO_360_OU_DUAL)
+        elif cur == VRGLWidget.STEREO_MONO:
+            self._set_stereo_mode(VRGLWidget.STEREO_VR180_SBS_LEFT)
+        self.show_osd_banner("👁️ Ojo Seleccionado: IZQUIERDO (Left Eye)")
+
+    def _select_right_eye(self):
+        """Selecciona el ojo derecho (o inferior en 360 OU) de forma inmediata en GPU."""
+        cur = self.viewport.stereo_mode
+        if cur in [VRGLWidget.STEREO_VR180_SBS_LEFT, VRGLWidget.STEREO_MONO]:
+            self._set_stereo_mode(VRGLWidget.STEREO_VR180_SBS_RIGHT)
+        elif cur == VRGLWidget.STEREO_360_SBS_LEFT:
+            self._set_stereo_mode(VRGLWidget.STEREO_360_SBS_RIGHT)
+        elif cur == VRGLWidget.STEREO_360_OU_TOP:
+            self._set_stereo_mode(VRGLWidget.STEREO_360_OU_BOTTOM)
+        elif cur == VRGLWidget.STEREO_VR180_SBS_DUAL:
+            self._set_stereo_mode(VRGLWidget.STEREO_VR180_SBS_INVERTED)
+        elif cur == VRGLWidget.STEREO_360_SBS_DUAL:
+            self._set_stereo_mode(VRGLWidget.STEREO_360_SBS_INVERTED)
+        elif cur == VRGLWidget.STEREO_360_OU_DUAL:
+            self._set_stereo_mode(VRGLWidget.STEREO_360_OU_INVERTED)
+        self.show_osd_banner("👁️ Ojo Seleccionado: DERECHO (Right Eye)")
+
+    def _toggle_stereo_eye(self):
+        """
+        Alterna en caliente entre Ojo Izquierdo ⇄ Ojo Derecho en tiempo real.
+        Operación 100% en shader GPU (0 ms, sin pausas, sin recarga de video y sin desincronización).
+        """
+        cur = self.viewport.stereo_mode
+        if cur in [VRGLWidget.STEREO_VR180_SBS_LEFT, VRGLWidget.STEREO_MONO]:
+            self._set_stereo_mode(VRGLWidget.STEREO_VR180_SBS_RIGHT)
+            self.show_osd_banner("👁️ Ojo Activo: DERECHO (Right Eye)")
+        elif cur == VRGLWidget.STEREO_VR180_SBS_RIGHT:
+            self._set_stereo_mode(VRGLWidget.STEREO_VR180_SBS_LEFT)
+            self.show_osd_banner("👁️ Ojo Activo: IZQUIERDO (Left Eye)")
+        elif cur == VRGLWidget.STEREO_360_SBS_LEFT:
+            self._set_stereo_mode(VRGLWidget.STEREO_360_SBS_RIGHT)
+            self.show_osd_banner("👁️ Ojo Activo: DERECHO (Right Eye)")
+        elif cur == VRGLWidget.STEREO_360_SBS_RIGHT:
+            self._set_stereo_mode(VRGLWidget.STEREO_360_SBS_LEFT)
+            self.show_osd_banner("👁️ Ojo Activo: IZQUIERDO (Left Eye)")
+        elif cur == VRGLWidget.STEREO_360_OU_TOP:
+            self._set_stereo_mode(VRGLWidget.STEREO_360_OU_BOTTOM)
+            self.show_osd_banner("👁️ Ojo Activo: INFERIOR / DERECHO")
+        elif cur == VRGLWidget.STEREO_360_OU_BOTTOM:
+            self._set_stereo_mode(VRGLWidget.STEREO_360_OU_TOP)
+            self.show_osd_banner("👁️ Ojo Activo: SUPERIOR / IZQUIERDO")
+        elif cur == VRGLWidget.STEREO_VR180_SBS_DUAL:
+            self._set_stereo_mode(VRGLWidget.STEREO_VR180_SBS_INVERTED)
+            self.show_osd_banner("🔄 Dual Estéreo: Canales Invertidos")
+        elif cur == VRGLWidget.STEREO_VR180_SBS_INVERTED:
+            self._set_stereo_mode(VRGLWidget.STEREO_VR180_SBS_DUAL)
+            self.show_osd_banner("👓 Dual Estéreo: Canales Normales")
+        elif cur == VRGLWidget.STEREO_360_SBS_DUAL:
+            self._set_stereo_mode(VRGLWidget.STEREO_360_SBS_INVERTED)
+            self.show_osd_banner("🔄 Dual Estéreo: Canales Invertidos")
+        elif cur == VRGLWidget.STEREO_360_SBS_INVERTED:
+            self._set_stereo_mode(VRGLWidget.STEREO_360_SBS_DUAL)
+            self.show_osd_banner("👓 Dual Estéreo: Canales Normales")
+        elif cur == VRGLWidget.STEREO_360_OU_DUAL:
+            self._set_stereo_mode(VRGLWidget.STEREO_360_OU_INVERTED)
+            self.show_osd_banner("🔄 Dual Estéreo: Canales Invertidos")
+        elif cur == VRGLWidget.STEREO_360_OU_INVERTED:
+            self._set_stereo_mode(VRGLWidget.STEREO_360_OU_DUAL)
+            self.show_osd_banner("👓 Dual Estéreo: Canales Normales")
+
     def _set_vr180_preset(self):
         """Activa VR 180° SBS estándar."""
         self._set_dome_fov(180.0)
@@ -2218,41 +3195,44 @@ class VRMainWindow(QMainWindow):
 
     def _toggle_dual_stereo(self):
         cur = self.viewport.stereo_mode
-        if cur in [VRGLWidget.STEREO_VR180_SBS_DUAL, VRGLWidget.STEREO_360_SBS_DUAL, VRGLWidget.STEREO_360_OU_DUAL]:
-            if cur == VRGLWidget.STEREO_VR180_SBS_DUAL:
+        if cur in [VRGLWidget.STEREO_VR180_SBS_DUAL, VRGLWidget.STEREO_360_SBS_DUAL, VRGLWidget.STEREO_360_OU_DUAL,
+                   VRGLWidget.STEREO_VR180_SBS_INVERTED, VRGLWidget.STEREO_360_SBS_INVERTED, VRGLWidget.STEREO_360_OU_INVERTED]:
+            if cur in [VRGLWidget.STEREO_VR180_SBS_DUAL, VRGLWidget.STEREO_VR180_SBS_INVERTED]:
                 self._set_stereo_mode(VRGLWidget.STEREO_VR180_SBS_LEFT)
-            elif cur == VRGLWidget.STEREO_360_SBS_DUAL:
+            elif cur in [VRGLWidget.STEREO_360_SBS_DUAL, VRGLWidget.STEREO_360_SBS_INVERTED]:
                 self._set_stereo_mode(VRGLWidget.STEREO_360_SBS_LEFT)
             else:
                 self._set_stereo_mode(VRGLWidget.STEREO_360_OU_TOP)
         else:
-            if cur in [VRGLWidget.STEREO_VR180_SBS_LEFT, VRGLWidget.STEREO_VR180_SBS_RIGHT, VRGLWidget.STEREO_VR180_SBS_INVERTED]:
+            if cur in [VRGLWidget.STEREO_VR180_SBS_LEFT, VRGLWidget.STEREO_VR180_SBS_RIGHT]:
                 self._set_stereo_mode(VRGLWidget.STEREO_VR180_SBS_DUAL)
-            elif cur in [VRGLWidget.STEREO_360_SBS_LEFT, VRGLWidget.STEREO_360_SBS_RIGHT, VRGLWidget.STEREO_360_SBS_INVERTED]:
+            elif cur in [VRGLWidget.STEREO_360_SBS_LEFT, VRGLWidget.STEREO_360_SBS_RIGHT]:
                 self._set_stereo_mode(VRGLWidget.STEREO_360_SBS_DUAL)
-            elif cur in [VRGLWidget.STEREO_360_OU_TOP, VRGLWidget.STEREO_360_OU_BOTTOM, VRGLWidget.STEREO_360_OU_INVERTED]:
+            elif cur in [VRGLWidget.STEREO_360_OU_TOP, VRGLWidget.STEREO_360_OU_BOTTOM]:
                 self._set_stereo_mode(VRGLWidget.STEREO_360_OU_DUAL)
             else:
                 self._set_stereo_mode(VRGLWidget.STEREO_VR180_SBS_DUAL)
 
     def _toggle_invert_eyes(self):
         cur = self.viewport.stereo_mode
-        if cur in [VRGLWidget.STEREO_VR180_SBS_INVERTED, VRGLWidget.STEREO_360_SBS_INVERTED, VRGLWidget.STEREO_360_OU_INVERTED]:
-            if cur == VRGLWidget.STEREO_VR180_SBS_INVERTED:
-                self._set_stereo_mode(VRGLWidget.STEREO_VR180_SBS_LEFT)
-            elif cur == VRGLWidget.STEREO_360_SBS_INVERTED:
-                self._set_stereo_mode(VRGLWidget.STEREO_360_SBS_LEFT)
-            else:
-                self._set_stereo_mode(VRGLWidget.STEREO_360_OU_TOP)
-        else:
-            if cur in [VRGLWidget.STEREO_VR180_SBS_LEFT, VRGLWidget.STEREO_VR180_SBS_RIGHT, VRGLWidget.STEREO_VR180_SBS_DUAL]:
+        if cur in [VRGLWidget.STEREO_VR180_SBS_DUAL, VRGLWidget.STEREO_360_SBS_DUAL, VRGLWidget.STEREO_360_OU_DUAL]:
+            if cur == VRGLWidget.STEREO_VR180_SBS_DUAL:
                 self._set_stereo_mode(VRGLWidget.STEREO_VR180_SBS_INVERTED)
-            elif cur in [VRGLWidget.STEREO_360_SBS_LEFT, VRGLWidget.STEREO_360_SBS_RIGHT, VRGLWidget.STEREO_360_SBS_DUAL]:
+            elif cur == VRGLWidget.STEREO_360_SBS_DUAL:
                 self._set_stereo_mode(VRGLWidget.STEREO_360_SBS_INVERTED)
-            elif cur in [VRGLWidget.STEREO_360_OU_TOP, VRGLWidget.STEREO_360_OU_BOTTOM, VRGLWidget.STEREO_360_OU_DUAL]:
-                self._set_stereo_mode(VRGLWidget.STEREO_360_OU_INVERTED)
             else:
-                self._set_stereo_mode(VRGLWidget.STEREO_VR180_SBS_INVERTED)
+                self._set_stereo_mode(VRGLWidget.STEREO_360_OU_INVERTED)
+            self.show_osd_banner("🔄 Dual Estéreo: Canales Invertidos")
+        elif cur in [VRGLWidget.STEREO_VR180_SBS_INVERTED, VRGLWidget.STEREO_360_SBS_INVERTED, VRGLWidget.STEREO_360_OU_INVERTED]:
+            if cur == VRGLWidget.STEREO_VR180_SBS_INVERTED:
+                self._set_stereo_mode(VRGLWidget.STEREO_VR180_SBS_DUAL)
+            elif cur == VRGLWidget.STEREO_360_SBS_INVERTED:
+                self._set_stereo_mode(VRGLWidget.STEREO_360_SBS_DUAL)
+            else:
+                self._set_stereo_mode(VRGLWidget.STEREO_360_OU_DUAL)
+            self.show_osd_banner("👓 Dual Estéreo: Canales Normales")
+        else:
+            self._toggle_stereo_eye()
 
     def _cycle_next_projection(self):
         """Atajo con tecla P para rotar a la siguiente proyección de manera cíclica."""
@@ -2292,6 +3272,24 @@ class VRMainWindow(QMainWindow):
             self.act_stereo_360_sbs.setChecked(mode_id in [VRGLWidget.STEREO_360_SBS_LEFT, VRGLWidget.STEREO_360_SBS_RIGHT])
         if hasattr(self, 'act_stereo_360_ou'):
             self.act_stereo_360_ou.setChecked(mode_id in [VRGLWidget.STEREO_360_OU_TOP, VRGLWidget.STEREO_360_OU_BOTTOM])
+
+        is_left = mode_id in [VRGLWidget.STEREO_VR180_SBS_LEFT, VRGLWidget.STEREO_360_SBS_LEFT, VRGLWidget.STEREO_360_OU_TOP]
+        is_right = mode_id in [VRGLWidget.STEREO_VR180_SBS_RIGHT, VRGLWidget.STEREO_360_SBS_RIGHT, VRGLWidget.STEREO_360_OU_BOTTOM]
+        if hasattr(self, 'act_eye_left'):
+            self.act_eye_left.setChecked(is_left)
+            self.act_eye_left.setEnabled(mode_id != VRGLWidget.STEREO_MONO)
+        if hasattr(self, 'act_eye_right'):
+            self.act_eye_right.setChecked(is_right)
+            self.act_eye_right.setEnabled(mode_id != VRGLWidget.STEREO_MONO)
+
+        if hasattr(self, 'btn_toggle_eye'):
+            if is_right:
+                self.btn_toggle_eye.setStyleSheet("color: #38bdf8; font-weight: bold;")
+                self.btn_toggle_eye.setToolTip("Ojo actual: DERECHO. Clic para alternar a Izquierdo (E)")
+            else:
+                self.btn_toggle_eye.setStyleSheet("")
+                self.btn_toggle_eye.setToolTip("Ojo actual: IZQUIERDO. Clic para alternar a Derecho (E)")
+
         if hasattr(self, 'act_stereo_dual'):
             self.act_stereo_dual.setChecked(mode_id in [VRGLWidget.STEREO_VR180_SBS_DUAL, VRGLWidget.STEREO_360_SBS_DUAL, VRGLWidget.STEREO_360_OU_DUAL])
         if hasattr(self, 'act_stereo_invert'):
@@ -2299,15 +3297,15 @@ class VRMainWindow(QMainWindow):
 
         names = {
             VRGLWidget.STEREO_MONO: "2D Mono",
-            VRGLWidget.STEREO_VR180_SBS_LEFT: "VR180",
+            VRGLWidget.STEREO_VR180_SBS_LEFT: "VR180 Izq",
             VRGLWidget.STEREO_VR180_SBS_RIGHT: "VR180 Der",
             VRGLWidget.STEREO_VR180_SBS_DUAL: "VR180 Dual",
             VRGLWidget.STEREO_VR180_SBS_INVERTED: "VR180 Invert",
-            VRGLWidget.STEREO_360_SBS_LEFT: "360 SBS",
+            VRGLWidget.STEREO_360_SBS_LEFT: "360 SBS Izq",
             VRGLWidget.STEREO_360_SBS_RIGHT: "360 SBS Der",
             VRGLWidget.STEREO_360_SBS_DUAL: "360 SBS Dual",
             VRGLWidget.STEREO_360_SBS_INVERTED: "360 Invert",
-            VRGLWidget.STEREO_360_OU_TOP: "360 OU",
+            VRGLWidget.STEREO_360_OU_TOP: "360 OU Sup",
             VRGLWidget.STEREO_360_OU_BOTTOM: "360 OU Inf",
             VRGLWidget.STEREO_360_OU_DUAL: "360 OU Dual",
             VRGLWidget.STEREO_360_OU_INVERTED: "360 OU Invert",
@@ -2541,6 +3539,10 @@ class VRMainWindow(QMainWindow):
             self.viewport.recenter_view()
             event.accept()
             return
+        elif key == Qt.Key_E:
+            self._toggle_stereo_eye()
+            event.accept()
+            return
         super().keyPressEvent(event)
 
     def _install_tooltip_filter(self, parent_widget):
@@ -2665,9 +3667,13 @@ class VRMainWindow(QMainWindow):
                 stereo_map = {
                     "MONO": VRGLWidget.STEREO_MONO,
                     "VR180_SBS": VRGLWidget.STEREO_VR180_SBS_LEFT,
+                    "VR180_SBS_RIGHT": VRGLWidget.STEREO_VR180_SBS_RIGHT,
                     "VR190_SBS": VRGLWidget.STEREO_VR180_SBS_LEFT,
+                    "VR190_SBS_RIGHT": VRGLWidget.STEREO_VR180_SBS_RIGHT,
                     "360_SBS": VRGLWidget.STEREO_360_SBS_LEFT,
+                    "360_SBS_RIGHT": VRGLWidget.STEREO_360_SBS_RIGHT,
                     "360_OU": VRGLWidget.STEREO_360_OU_TOP,
+                    "360_OU_BOTTOM": VRGLWidget.STEREO_360_OU_BOTTOM,
                     "DUAL_VR180": VRGLWidget.STEREO_VR180_SBS_DUAL,
                     "DUAL_360_SBS": VRGLWidget.STEREO_360_SBS_DUAL,
                     "DUAL_360_OU": VRGLWidget.STEREO_360_OU_DUAL,
@@ -2678,7 +3684,7 @@ class VRMainWindow(QMainWindow):
                 if mode_id in [VRGLWidget.STEREO_VR180_SBS_LEFT, VRGLWidget.STEREO_VR180_SBS_RIGHT]:
                     self._set_dome_fov(dome_fov)
                     self._set_lens_model(lens_model)
-                elif mode_id in [VRGLWidget.STEREO_360_SBS_LEFT, VRGLWidget.STEREO_360_OU_TOP]:
+                elif mode_id in [VRGLWidget.STEREO_360_SBS_LEFT, VRGLWidget.STEREO_360_SBS_RIGHT, VRGLWidget.STEREO_360_OU_TOP, VRGLWidget.STEREO_360_OU_BOTTOM]:
                     self._set_dome_fov(180.0)
                     self._set_lens_model(0)
 
@@ -2720,8 +3726,6 @@ class VRMainWindow(QMainWindow):
     def _on_playback_state_changed(self, is_playing):
         self.btn_play.setText("⏸" if is_playing else "▶")
         self.act_play_pause.setText("⏸ Pausar" if is_playing else "▶ Reproducir")
-        if not is_playing:
-            self._wake_ui()
 
     def _on_seek_moved(self, val):
         dur = self.backend.duration
@@ -2848,8 +3852,8 @@ class VRMainWindow(QMainWindow):
                 self.is_ui_visible = True
             self.hide_timer.start()
         else:
-            # Si el ratón sale de la zona inferior, no hay menú abierto y está reproduciendo, ocultar
-            if self.backend.current_file and not self.backend.is_paused and not self._is_any_menu_active():
+            # Si el ratón sale de la zona inferior y no hay menú abierto, ocultar la barra
+            if self.backend.current_file and not self._is_any_menu_active():
                 if self.bottom_bar.isVisible():
                     self.bottom_bar.setVisible(False)
                     self.is_ui_visible = False
@@ -2861,14 +3865,14 @@ class VRMainWindow(QMainWindow):
         return False
 
     def _auto_hide_ui(self):
-        # No ocultar la barra si el video está pausado, si hay un menú abierto o si el cursor está sobre la barra
+        # No ocultar la barra si hay un menú abierto o si el cursor está sobre la barra
         if self._is_any_menu_active():
             self.hide_timer.start()
             return
         if self.bottom_bar.underMouse():
             self.hide_timer.start()
             return
-        if not self.backend.is_paused and self.backend.current_file:
+        if self.backend.current_file:
             self.bottom_bar.setVisible(False)
             self.is_ui_visible = False
 
@@ -2912,9 +3916,13 @@ class VRMainWindow(QMainWindow):
                 stereo_map = {
                     "MONO": VRGLWidget.STEREO_MONO,
                     "VR180_SBS": VRGLWidget.STEREO_VR180_SBS_LEFT,
+                    "VR180_SBS_RIGHT": VRGLWidget.STEREO_VR180_SBS_RIGHT,
                     "VR190_SBS": VRGLWidget.STEREO_VR180_SBS_LEFT,
+                    "VR190_SBS_RIGHT": VRGLWidget.STEREO_VR180_SBS_RIGHT,
                     "360_SBS": VRGLWidget.STEREO_360_SBS_LEFT,
+                    "360_SBS_RIGHT": VRGLWidget.STEREO_360_SBS_RIGHT,
                     "360_OU": VRGLWidget.STEREO_360_OU_TOP,
+                    "360_OU_BOTTOM": VRGLWidget.STEREO_360_OU_BOTTOM,
                     "DUAL_VR180": VRGLWidget.STEREO_VR180_SBS_DUAL,
                     "DUAL_360_SBS": VRGLWidget.STEREO_360_SBS_DUAL,
                     "DUAL_360_OU": VRGLWidget.STEREO_360_OU_DUAL,
@@ -2923,7 +3931,7 @@ class VRMainWindow(QMainWindow):
                 if mode_id in [VRGLWidget.STEREO_VR180_SBS_LEFT, VRGLWidget.STEREO_VR180_SBS_RIGHT]:
                     self._set_dome_fov(dome_fov)
                     self._set_lens_model(lens_model)
-                elif mode_id in [VRGLWidget.STEREO_360_SBS_LEFT, VRGLWidget.STEREO_360_OU_TOP]:
+                elif mode_id in [VRGLWidget.STEREO_360_SBS_LEFT, VRGLWidget.STEREO_360_SBS_RIGHT, VRGLWidget.STEREO_360_OU_TOP, VRGLWidget.STEREO_360_OU_BOTTOM]:
                     self._set_dome_fov(180.0)
                     self._set_lens_model(0)
                 self._set_stereo_mode(mode_id)
