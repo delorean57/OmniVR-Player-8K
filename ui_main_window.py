@@ -18,10 +18,11 @@ from PySide6.QtWidgets import (
     QAbstractItemView, QGroupBox, QFormLayout, QDoubleSpinBox,
     QListWidget, QListWidgetItem, QStyle, QStyleOptionSlider
 )
-from PySide6.QtCore import Qt, QTimer, QPoint, QPointF, QSize, Signal, QSettings, QEvent
+from PySide6.QtCore import Qt, QTimer, QPoint, QPointF, QSize, Signal, QSettings, QEvent, QRectF
 from PySide6.QtGui import (
     QIcon, QFont, QColor, QPalette, QKeySequence, QShortcut,
-    QDragEnterEvent, QDropEvent, QAction, QActionGroup, QCursor, QKeyEvent
+    QDragEnterEvent, QDropEvent, QAction, QActionGroup, QCursor, QKeyEvent,
+    QPainter, QPen, QPolygonF
 )
 
 from vr_engine import VRGLWidget
@@ -1043,6 +1044,7 @@ DEFAULT_TOOLBAR_ORDER = [
     "btn_fov",
     "spacer",
     "btn_loop",
+    "btn_ab_loop",
     "btn_recenter",
     "btn_toggle_eye",
     "btn_orbit",
@@ -1067,6 +1069,7 @@ DEFAULT_TOOLBAR_VISIBILITY = {
     "btn_fov": True,
     "spacer": True,
     "btn_loop": True,
+    "btn_ab_loop": True,
     "btn_recenter": True,
     "btn_toggle_eye": True,    # Activado por defecto en la barra
     "btn_orbit": False,        # Sustituido por el botón de alternar ojo por defecto
@@ -1091,6 +1094,7 @@ TOOLBAR_ITEM_LABELS = {
     "btn_fov": "🔍 Menú y selector de FOV / Zoom",
     "spacer": "↔ Espaciador flexible (Separador Izq / Der)",
     "btn_loop": "🔁 Repetición en bucle (Ctrl+L)",
+    "btn_ab_loop": "🔂 Bucle de sección A-B ([ / ] / \\)",
     "btn_recenter": "🎯 Centrar cámara al frente (R)",
     "btn_toggle_eye": "👁️ Alternar Ojo Izquierdo ⇄ Derecho (E)",
     "btn_orbit": "🔄 Giro automático 360° (Auto-Orbit)",
@@ -1325,6 +1329,8 @@ DEFAULT_CONTEXT_MENU_ORDER = [
     "seek_backward",
     "seek_forward",
     "stop",
+    "loop_toggle",
+    "ab_loop_menu",
     "sep_optical",
     "proj_menu",
     "stereo_menu",
@@ -1354,6 +1360,8 @@ DEFAULT_CONTEXT_MENU_VISIBILITY = {
     "seek_backward": True,
     "seek_forward": True,
     "stop": True,
+    "loop_toggle": True,
+    "ab_loop_menu": True,
     "sep_optical": True,
     "proj_menu": True,
     "stereo_menu": True,
@@ -1383,6 +1391,8 @@ CONTEXT_MENU_ITEM_LABELS = {
     "seek_backward": "⏪ Retroceder 5 segundos (Izq)",
     "seek_forward": "⏩ Adelantar 5 segundos (Der)",
     "stop": "⏹ Detener y reiniciar al inicio (Home)",
+    "loop_toggle": "🔁 Repetición en Bucle (Ctrl+L)",
+    "ab_loop_menu": "🔂 Menú de Bucle de Sección A-B",
     "sep_optical": "── Separador: Óptica y 3D ──",
     "proj_menu": "📷 Menú de Proyecciones 360 / VR",
     "stereo_menu": "🕶️ Menú de Modo 3D Estéreo (VR180 / 190 / 200 / 360)",
@@ -1653,6 +1663,10 @@ class VRShortcutsDialog(QDialog):
                 ("Flecha Izq / Der", "Retroceder / Adelantar 5 segundos"),
                 ("Shift + Izq / Der", "Retroceder / Adelantar 10 segundos"),
                 ("Inicio (Home)", "Reiniciar reproducción al inicio"),
+                ("Ctrl + L", "Activar / Desactivar repetición en bucle"),
+                ("[", "Fijar inicio de bucle A-B (Punto A en posición actual)"),
+                ("]", "Fijar fin de bucle A-B (Punto B en posición actual)"),
+                ("\\", "Quitar / Restablecer bucle A-B"),
                 ("Flechas Arr / Abj", "Subir / Bajar volumen (+/- 5%)"),
                 ("M", "Silenciar / Activar sonido (Mute)"),
             ]),
@@ -1862,17 +1876,292 @@ class VRInViewportToolTip(QFrame):
         self.hide()
 
 
+class VRABLoopDialog(QDialog):
+    """
+    Diálogo Glassmorphic No-Modal para configurar con precisión el bucle de repetición de sección A - B.
+    Permite fijar puntos en segundos, usar la posición en tiempo real del reproductor o saltar a los puntos A/B.
+    Se actualiza dinámicamente si el video avanza o si el usuario selecciona otro punto en la barra de tiempo.
+    """
+    def __init__(self, backend, duration_sec, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Configurar Bucle de Sección A-B")
+        self.resize(520, 360)
+        self.setStyleSheet(DARK_STYLESHEET)
+        self.setModal(False)
+        self.backend = backend
+        self.duration_sec = max(0.0, float(duration_sec))
+
+        layout = QVBoxLayout(self)
+        layout.setSpacing(12)
+
+        header = QLabel("🔂 BUCLE DE REPETICIÓN A - B")
+        header.setStyleSheet("font-size: 16px; font-weight: bold; color: #38bdf8;")
+        sub = QLabel("Defina el punto de inicio (A) y el punto de fin (B) para repetir un fragmento en bucle continuo.")
+        sub.setStyleSheet("color: #94a3b8; font-size: 12px;")
+        sub.setWordWrap(True)
+        layout.addWidget(header)
+        layout.addWidget(sub)
+
+        # Indicador en Tiempo Real de la Posición Actual del Video
+        cur_box = QFrame()
+        cur_box.setStyleSheet("background: rgba(8, 14, 24, 0.7); border: 1px solid rgba(56, 189, 248, 0.35); border-radius: 8px; padding: 6px 12px;")
+        cur_layout = QHBoxLayout(cur_box)
+        cur_layout.setContentsMargins(6, 4, 6, 4)
+        self.lbl_current_time = QLabel("📍 Posición Actual del Video: 00:00:00.00 (0.00 s)")
+        self.lbl_current_time.setStyleSheet("color: #38bdf8; font-weight: bold; font-size: 13px;")
+        cur_layout.addWidget(self.lbl_current_time)
+        layout.addWidget(cur_box)
+
+        form_frame = QFrame()
+        form_frame.setStyleSheet("background: rgba(15, 23, 42, 0.6); border: 1px solid rgba(255, 255, 255, 0.08); border-radius: 8px; padding: 10px;")
+        form_layout = QVBoxLayout(form_frame)
+        form_layout.setSpacing(10)
+
+        max_val = self.duration_sec if self.duration_sec > 0 else 86400.0
+
+        # Punto A
+        row_a = QHBoxLayout()
+        lbl_a = QLabel("Punto A (Inicio):")
+        lbl_a.setStyleSheet("color: #38bdf8; font-weight: bold; min-width: 110px;")
+        self.spin_a = QDoubleSpinBox()
+        self.spin_a.setRange(0.0, max_val)
+        self.spin_a.setDecimals(2)
+        self.spin_a.setSingleStep(1.0)
+        self.spin_a.setSuffix(" s")
+        self.spin_a.setFixedWidth(95)
+        cur_a = self.backend.ab_loop_a if self.backend.ab_loop_a is not None else 0.0
+        self.spin_a.setValue(cur_a)
+        self.spin_a.valueChanged.connect(self._update_info)
+
+        cur_t_str = self._format_time_sec(float(self.backend.current_time))
+        self.btn_cur_a = QPushButton(f"📍 Fijar Inicio (A) en posición actual ({cur_t_str})")
+        self.btn_cur_a.setToolTip(f"Fijar el Punto A en la posición actual del video ({cur_t_str})")
+        self.btn_cur_a.clicked.connect(self._set_a_to_current)
+
+        btn_seek_a = QPushButton("⏩ Ir a A")
+        btn_seek_a.setToolTip("Saltar la reproducción al segundo del Punto A")
+        btn_seek_a.clicked.connect(lambda: self.backend.seek(self.spin_a.value(), absolute=True, exact=True))
+
+        row_a.addWidget(lbl_a)
+        row_a.addWidget(self.spin_a)
+        row_a.addWidget(self.btn_cur_a, 1)
+        row_a.addWidget(btn_seek_a)
+        form_layout.addLayout(row_a)
+
+        # Punto B
+        row_b = QHBoxLayout()
+        lbl_b = QLabel("Punto B (Fin):")
+        lbl_b.setStyleSheet("color: #f43f5e; font-weight: bold; min-width: 110px;")
+        self.spin_b = QDoubleSpinBox()
+        self.spin_b.setRange(0.0, max_val)
+        self.spin_b.setDecimals(2)
+        self.spin_b.setSingleStep(1.0)
+        self.spin_b.setSuffix(" s")
+        self.spin_b.setFixedWidth(95)
+        cur_b = self.backend.ab_loop_b if self.backend.ab_loop_b is not None else (self.duration_sec if self.duration_sec > 0 else 0.0)
+        self.spin_b.setValue(cur_b)
+        self.spin_b.valueChanged.connect(self._update_info)
+
+        self.btn_cur_b = QPushButton(f"📍 Fijar Fin (B) en posición actual ({cur_t_str})")
+        self.btn_cur_b.setToolTip(f"Fijar el Punto B en la posición actual del video ({cur_t_str})")
+        self.btn_cur_b.clicked.connect(self._set_b_to_current)
+
+        btn_seek_b = QPushButton("⏩ Ir a B")
+        btn_seek_b.setToolTip("Saltar la reproducción al segundo del Punto B")
+        btn_seek_b.clicked.connect(lambda: self.backend.seek(self.spin_b.value(), absolute=True, exact=True))
+
+        row_b.addWidget(lbl_b)
+        row_b.addWidget(self.spin_b)
+        row_b.addWidget(self.btn_cur_b, 1)
+        row_b.addWidget(btn_seek_b)
+        form_layout.addLayout(row_b)
+
+        # Info Duración
+        self.lbl_info = QLabel("")
+        self.lbl_info.setStyleSheet("color: #cbd5e1; font-size: 12px; margin-top: 2px;")
+        form_layout.addWidget(self.lbl_info)
+
+        layout.addWidget(form_frame)
+
+        # Botones de Acción
+        btns_layout = QHBoxLayout()
+        btn_clear = QPushButton("🗑️ Quitar Bucle")
+        btn_clear.setStyleSheet("background-color: rgba(239, 68, 68, 0.2); border-color: rgba(239, 68, 68, 0.4); color: #fca5a5;")
+        btn_clear.clicked.connect(self._on_clear)
+        btns_layout.addWidget(btn_clear)
+
+        btns_layout.addStretch()
+
+        btn_apply = QPushButton("✓ Aplicar Bucle")
+        btn_apply.setStyleSheet("background-color: #0284c7; color: white; font-weight: bold; padding: 6px 16px;")
+        btn_apply.clicked.connect(self._on_apply)
+        btns_layout.addWidget(btn_apply)
+
+        btn_close = QPushButton("Cerrar")
+        btn_close.clicked.connect(self.close)
+        btns_layout.addWidget(btn_close)
+
+        layout.addLayout(btns_layout)
+
+        # Timer continuo para sincronización precisa en vivo (40 ms = 25 fps)
+        self._poll_timer = QTimer(self)
+        self._poll_timer.setInterval(40)
+        self._poll_timer.timeout.connect(self._poll_time)
+
+        # Conectar señales en tiempo real del reproductor
+        self._ensure_backend_connected()
+        self._on_time_changed(self.backend.current_time)
+        self._update_info()
+
+    def _ensure_backend_connected(self):
+        """Garantiza que las señales del backend estén conectadas sin duplicados."""
+        if not getattr(self, '_backend_connected', False):
+            self.backend.time_changed.connect(self._on_time_changed)
+            self.backend.duration_changed.connect(self._on_duration_changed)
+            self.backend.ab_loop_changed.connect(self._on_ab_loop_changed)
+            self._backend_connected = True
+
+    def _poll_time(self):
+        """Lectura periódica del tiempo del backend mientras el diálogo esté visible."""
+        if self.backend:
+            self._on_time_changed(self.backend.current_time)
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        self._ensure_backend_connected()
+        self.sync_state()
+        if hasattr(self, '_poll_timer'):
+            self._poll_timer.start()
+
+    def hideEvent(self, event):
+        if hasattr(self, '_poll_timer'):
+            self._poll_timer.stop()
+        super().hideEvent(event)
+
+    def closeEvent(self, event):
+        if hasattr(self, '_poll_timer'):
+            self._poll_timer.stop()
+        super().closeEvent(event)
+
+    def sync_state(self):
+        """Sincroniza los controles con el estado actual del backend."""
+        self._ensure_backend_connected()
+        cur_a = self.backend.ab_loop_a if self.backend.ab_loop_a is not None else 0.0
+        cur_b = self.backend.ab_loop_b if self.backend.ab_loop_b is not None else (self.duration_sec if self.duration_sec > 0 else 0.0)
+        self.spin_a.blockSignals(True)
+        self.spin_b.blockSignals(True)
+        self.spin_a.setValue(cur_a)
+        self.spin_b.setValue(cur_b)
+        self.spin_a.blockSignals(False)
+        self.spin_b.blockSignals(False)
+        self._on_time_changed(self.backend.current_time)
+        self._update_info()
+
+    def _set_a_to_current(self):
+        t = float(self.backend.current_time)
+        self.spin_a.setValue(t)
+        self._update_info()
+
+    def _set_b_to_current(self):
+        t = float(self.backend.current_time)
+        self.spin_b.setValue(t)
+        self._update_info()
+
+    def _on_time_changed(self, t):
+        if t is None:
+            t = self.backend.current_time if self.backend else 0.0
+        t_float = max(0.0, float(t))
+        time_str = self._format_time_sec(t_float)
+        self.lbl_current_time.setText(f"📍 Posición Actual del Video: {time_str} ({t_float:.2f} s)")
+        self.btn_cur_a.setText(f"📍 Fijar Inicio (A) en posición actual ({time_str})")
+        self.btn_cur_b.setText(f"📍 Fijar Fin (B) en posición actual ({time_str})")
+        self.btn_cur_a.setToolTip(f"Fijar Punto A en {time_str}")
+        self.btn_cur_b.setToolTip(f"Fijar Punto B en {time_str}")
+
+    def _on_duration_changed(self, dur):
+        if dur and dur > 0:
+            self.duration_sec = float(dur)
+            self.spin_a.setRange(0.0, self.duration_sec)
+            self.spin_b.setRange(0.0, self.duration_sec)
+            self._update_info()
+
+    def _on_ab_loop_changed(self, a, b):
+        self.spin_a.blockSignals(True)
+        self.spin_b.blockSignals(True)
+        if a is not None:
+            self.spin_a.setValue(float(a))
+        if b is not None:
+            self.spin_b.setValue(float(b))
+        self.spin_a.blockSignals(False)
+        self.spin_b.blockSignals(False)
+        self._update_info()
+
+    def _format_time_sec(self, s):
+        s_int = max(0, int(s))
+        m, sec = divmod(s_int, 60)
+        h, m = divmod(m, 60)
+        decimals = int((s - s_int) * 100)
+        if h > 0:
+            return f"{h:02d}:{m:02d}:{sec:02d}.{decimals:02d}"
+        return f"{m:02d}:{sec:02d}.{decimals:02d}"
+
+    def _update_info(self):
+        a = self.spin_a.value()
+        b = self.spin_b.value()
+        dur = abs(b - a)
+        if b <= a:
+            self.lbl_info.setText(f"⚠️ Nota: Si A >= B, se ajustarán automáticamente ({self._format_time_sec(a)} ➔ {self._format_time_sec(b)})")
+            self.lbl_info.setStyleSheet("color: #fbbf24; font-size: 12px;")
+        else:
+            self.lbl_info.setText(f"⏱️ Rango: {self._format_time_sec(a)} ➔ {self._format_time_sec(b)} (Duración del bucle: {dur:.2f} s)")
+            self.lbl_info.setStyleSheet("color: #38bdf8; font-size: 12px;")
+
+    def _on_apply(self):
+        a = self.spin_a.value()
+        b = self.spin_b.value()
+        if a == b:
+            QMessageBox.warning(self, "Rango Inválido", "El inicio (A) y el fin (B) no pueden ser exactamente iguales.")
+            return
+        if b < a:
+            a, b = b, a
+            self.spin_a.blockSignals(True)
+            self.spin_b.blockSignals(True)
+            self.spin_a.setValue(a)
+            self.spin_b.setValue(b)
+            self.spin_a.blockSignals(False)
+            self.spin_b.blockSignals(False)
+        self.backend.set_ab_loop_range(a, b)
+        dur = abs(b - a)
+        parent = self.parent()
+        if parent and hasattr(parent, 'show_osd_banner'):
+            parent.show_osd_banner(f"🔂 Bucle A-B activo: {self._format_time_sec(a)} ➔ {self._format_time_sec(b)} ({dur:.1f}s)")
+
+    def _on_clear(self):
+        self.backend.clear_ab_loop()
+        parent = self.parent()
+        if parent and hasattr(parent, 'show_osd_banner'):
+            parent.show_osd_banner("🔄 Bucle A-B restablecido")
+
+
 class ClickableSlider(QSlider):
-    """Custom slider that seeks directly to clicked position and shows hover time preview."""
+    """Custom slider that seeks directly to clicked position, displays A-B loop range, and shows hover time preview."""
     sliderClicked = Signal(int)
 
     def __init__(self, orientation, parent=None):
         super().__init__(orientation, parent)
         self.setMouseTracking(True)
         self.duration_sec = 0.0
+        self.loop_a = None
+        self.loop_b = None
 
     def set_duration(self, dur):
         self.duration_sec = max(0.0, float(dur))
+        self.update()
+
+    def set_ab_loop(self, a, b):
+        self.loop_a = float(a) if a is not None else None
+        self.loop_b = float(b) if b is not None else None
+        self.update()
 
     def mousePressEvent(self, event):
         if event.button() == Qt.LeftButton:
@@ -1926,6 +2215,66 @@ class ClickableSlider(QSlider):
         adjusted_x = pos_x - half_w
         ratio = max(0.0, min(1.0, adjusted_x / available_w))
         return int(self.minimum() + round(ratio * (self.maximum() - self.minimum())))
+
+    def _sec_to_x(self, sec):
+        if not self.duration_sec or self.duration_sec <= 0:
+            return 0.0
+        opt = QStyleOptionSlider()
+        self.initStyleOption(opt)
+        handle_rect = self.style().subControlRect(QStyle.CC_Slider, opt, QStyle.SC_SliderHandle, self)
+        handle_w = handle_rect.width() if (handle_rect.isValid() and handle_rect.width() > 0) else 16
+        half_w = handle_w / 2.0
+        available_w = max(1.0, float(self.width() - handle_w))
+        ratio = max(0.0, min(1.0, float(sec) / self.duration_sec))
+        return half_w + ratio * available_w
+
+    def paintEvent(self, event):
+        super().paintEvent(event)
+        if (self.loop_a is not None or self.loop_b is not None) and self.duration_sec > 0:
+            painter = QPainter(self)
+            painter.setRenderHint(QPainter.Antialiasing)
+            cy = self.height() / 2.0
+
+            xa = self._sec_to_x(self.loop_a) if self.loop_a is not None else None
+            xb = self._sec_to_x(self.loop_b) if self.loop_b is not None else None
+
+            # Rango resaltado entre A y B
+            if xa is not None and xb is not None:
+                left_x = min(xa, xb)
+                right_x = max(xa, xb)
+                w = max(2.0, right_x - left_x)
+                glow_rect = QRectF(left_x, cy - 4, w, 8)
+                painter.setPen(QPen(QColor(56, 189, 248, 220), 1.5))
+                painter.setBrush(QColor(14, 165, 233, 140))
+                painter.drawRoundedRect(glow_rect, 3, 3)
+
+            # Marcador A (Pin cian apuntando a la pista)
+            if xa is not None:
+                poly_a = QPolygonF([
+                    QPointF(xa - 4, cy - 9),
+                    QPointF(xa + 4, cy - 9),
+                    QPointF(xa, cy - 3)
+                ])
+                painter.setPen(QPen(QColor(255, 255, 255, 230), 1))
+                painter.setBrush(QColor(56, 189, 248))
+                painter.drawPolygon(poly_a)
+                painter.setFont(QFont("Segoe UI", 8, QFont.Bold))
+                painter.setPen(QColor(56, 189, 248))
+                painter.drawText(QRectF(xa - 10, cy - 23, 20, 14), Qt.AlignCenter, "A")
+
+            # Marcador B (Pin rojo coral apuntando a la pista)
+            if xb is not None:
+                poly_b = QPolygonF([
+                    QPointF(xb - 4, cy - 9),
+                    QPointF(xb + 4, cy - 9),
+                    QPointF(xb, cy - 3)
+                ])
+                painter.setPen(QPen(QColor(255, 255, 255, 230), 1))
+                painter.setBrush(QColor(244, 63, 94))
+                painter.drawPolygon(poly_b)
+                painter.setFont(QFont("Segoe UI", 8, QFont.Bold))
+                painter.setPen(QColor(244, 63, 94))
+                painter.drawText(QRectF(xb - 10, cy - 23, 20, 14), Qt.AlignCenter, "B")
 
 
 class VROverlayMenu(QFrame):
@@ -2159,6 +2508,8 @@ class VRMainWindow(QMainWindow):
         # Synchronize UI with loaded settings
         self._sync_invert_ui()
         self._sync_flip_ui()
+        saved_loop = self.settings.value("loop", True, type=bool)
+        self._set_loop_state(saved_loop, notify=False)
 
         # Audio mute state tracking
         self.is_muted = False
@@ -2243,7 +2594,24 @@ class VRMainWindow(QMainWindow):
         self.act_loop = play_menu.addAction("🔁 Repetir en bucle")
         self.act_loop.setCheckable(True)
         self.act_loop.setShortcut(QKeySequence("Ctrl+L"))
-        self.act_loop.toggled.connect(self._set_loop_state)
+        self.act_loop.toggled.connect(lambda chk: self._set_loop_state(chk, notify=True))
+
+        play_menu.addSeparator()
+
+        self.act_set_loop_a = play_menu.addAction("🅰️ Fijar Inicio de Bucle (Punto A)")
+        self.act_set_loop_a.setShortcut(QKeySequence("["))
+        self.act_set_loop_a.triggered.connect(self._set_current_as_loop_a)
+
+        self.act_set_loop_b = play_menu.addAction("🅱️ Fijar Fin de Bucle (Punto B)")
+        self.act_set_loop_b.setShortcut(QKeySequence("]"))
+        self.act_set_loop_b.triggered.connect(self._set_current_as_loop_b)
+
+        self.act_clear_ab_loop = play_menu.addAction("🔄 Quitar Bucle A-B")
+        self.act_clear_ab_loop.setShortcut(QKeySequence("\\"))
+        self.act_clear_ab_loop.triggered.connect(self._clear_ab_loop)
+
+        self.act_edit_ab_loop = play_menu.addAction("⚙️ Configurar Rango A-B con Precisión...")
+        self.act_edit_ab_loop.triggered.connect(self._show_ab_loop_dialog)
 
         # Submenú Velocidad
         speed_menu = play_menu.addMenu("⚡ Velocidad de Reproducción")
@@ -2453,7 +2821,8 @@ class VRMainWindow(QMainWindow):
         for action in [
             act_open, act_open_url, act_exit, self.act_play_pause,
             act_prev5, act_next5, act_prev10, act_next10, act_restart,
-            self.act_loop, self.act_cycle_proj, act_recenter,
+            self.act_loop, self.act_set_loop_a, self.act_set_loop_b, self.act_clear_ab_loop,
+            self.act_cycle_proj, act_recenter,
             self.act_inv_both, self.act_hud_toggle, self.act_fs,
             self.act_toggle_eye
         ]:
@@ -2654,7 +3023,14 @@ class VRMainWindow(QMainWindow):
         self.btn_loop.setText("🔁")
         self.btn_loop.setCheckable(True)
         self.btn_loop.setToolTip("Repetición en bucle (Ctrl+L)")
-        self.btn_loop.toggled.connect(self._set_loop_state)
+        self.btn_loop.toggled.connect(lambda chk: self._set_loop_state(chk, notify=True))
+
+        # 11b. Botón Bucle A-B de Sección
+        self.btn_ab_loop = QToolButton(bar)
+        self.btn_ab_loop.setObjectName("menuBtn")
+        self.btn_ab_loop.setText("🔂 A-B ▾")
+        self.btn_ab_loop.setToolTip("Bucle de sección A-B (Fijar A: '[', Fijar B: ']', Quitar: '\\')")
+        self.btn_ab_loop.clicked.connect(self._show_ab_loop_menu)
 
         # 12. Botón Centrar cámara
         self.btn_recenter = QToolButton(bar)
@@ -2751,6 +3127,12 @@ class VRMainWindow(QMainWindow):
         if isinstance(saved_order, list):
             valid_keys = set(DEFAULT_TOOLBAR_ORDER)
             order = [k for k in saved_order if k in valid_keys]
+            if "btn_ab_loop" not in order:
+                if "btn_loop" in order:
+                    idx = order.index("btn_loop")
+                    order.insert(idx + 1, "btn_ab_loop")
+                else:
+                    order.append("btn_ab_loop")
             # Asegurar que cualquier control que falte se agregue al final
             for k in DEFAULT_TOOLBAR_ORDER:
                 if k not in order:
@@ -2848,6 +3230,21 @@ class VRMainWindow(QMainWindow):
         if isinstance(saved_order, list):
             valid_keys = set(DEFAULT_CONTEXT_MENU_ORDER)
             order = [k for k in saved_order if k in valid_keys]
+            if "loop_toggle" not in order:
+                if "stop" in order:
+                    idx = order.index("stop")
+                    order.insert(idx + 1, "loop_toggle")
+                else:
+                    order.append("loop_toggle")
+            if "ab_loop_menu" not in order:
+                if "loop_toggle" in order:
+                    idx = order.index("loop_toggle")
+                    order.insert(idx + 1, "ab_loop_menu")
+                elif "stop" in order:
+                    idx = order.index("stop")
+                    order.insert(idx + 1, "ab_loop_menu")
+                else:
+                    order.append("ab_loop_menu")
             for k in DEFAULT_CONTEXT_MENU_ORDER:
                 if k not in order:
                     order.append(k)
@@ -2908,6 +3305,12 @@ class VRMainWindow(QMainWindow):
             self.overlay_menu.hide()
             return
         self.overlay_menu.show_builder(self._build_invert_menu, anchor_widget=self.btn_invert_axes)
+
+    def _show_ab_loop_menu(self):
+        if self.overlay_menu.isVisible() and self.overlay_menu._anchor_widget == self.btn_ab_loop:
+            self.overlay_menu.hide()
+            return
+        self.overlay_menu.show_builder(self._build_ab_loop_menu, anchor_widget=self.btn_ab_loop)
 
     # Constructores de Menú para VROverlayMenu (visibles en ventana y pantalla completa)
     def _build_proj_menu(self, menu):
@@ -2996,6 +3399,34 @@ class VRMainWindow(QMainWindow):
         menu.add_separator()
         menu.add_action("Invertir Ambos Ejes", self._toggle_invert_both, shortcut="I")
 
+    def _build_ab_loop_menu(self, menu):
+        menu.add_title("🔂 BUCLE DE SECCIÓN A - B")
+        has_a = self.backend.ab_loop_a is not None
+        has_b = self.backend.ab_loop_b is not None
+
+        if has_a and has_b:
+            dur = abs(self.backend.ab_loop_b - self.backend.ab_loop_a)
+            status_txt = f"🟢 Bucle Activo: {self._fmt_time(self.backend.ab_loop_a)} ➔ {self._fmt_time(self.backend.ab_loop_b)} ({dur:.1f}s)"
+        elif has_a:
+            status_txt = f"🟡 Punto A en {self._fmt_time(self.backend.ab_loop_a)} (Falta marcar B)"
+        elif has_b:
+            status_txt = f"🟡 Punto B en {self._fmt_time(self.backend.ab_loop_b)} (Falta marcar A)"
+        else:
+            status_txt = "⚪ Sin bucle A-B establecido"
+
+        self._overlay_lbl_ab_status = menu.add_action(status_txt, None)
+        menu.add_separator()
+
+        cur_t_str = self._fmt_time(self.backend.current_time)
+        self._overlay_btn_loop_a = menu.add_action(f"🅰️ Fijar Inicio (A) en posición actual ({cur_t_str})", self._set_current_as_loop_a, shortcut="[")
+        self._overlay_btn_loop_b = menu.add_action(f"🅱️ Fijar Fin (B) en posición actual ({cur_t_str})", self._set_current_as_loop_b, shortcut="]")
+        menu.add_separator()
+        menu.add_action("⚙️ Configurar Rango A-B con Precisión...", self._show_ab_loop_dialog)
+        if has_a or has_b:
+            self._overlay_btn_clear_ab = menu.add_action("🗑️ Quitar Bucle A-B", self._clear_ab_loop, shortcut="\\")
+        else:
+            self._overlay_btn_clear_ab = None
+
     def _build_context_menu(self, menu):
         order, vis = self._load_context_menu_config()
 
@@ -3033,6 +3464,15 @@ class VRMainWindow(QMainWindow):
                 last_was_separator = False
             elif key == "stop":
                 menu.add_action("⏹ Reiniciar al inicio", lambda: self.backend.seek(0, absolute=True), shortcut="Home")
+                has_added_any = True
+                last_was_separator = False
+            elif key == "loop_toggle":
+                l_text = "🔁 Repetir en Bucle: Activado" if self.backend.loop_enabled else "🔁 Repetir en Bucle: Desactivado"
+                menu.add_action(l_text, lambda: self._set_loop_state(not self.backend.loop_enabled, notify=True), checked=bool(self.backend.loop_enabled), shortcut="Ctrl+L")
+                has_added_any = True
+                last_was_separator = False
+            elif key == "ab_loop_menu":
+                menu.add_sub_nav("🔂 Bucle A-B", self._build_ab_loop_menu)
                 has_added_any = True
                 last_was_separator = False
             elif key == "proj_menu":
@@ -3392,10 +3832,113 @@ class VRMainWindow(QMainWindow):
         except Exception:
             pass
 
-    def _set_loop_state(self, enabled):
-        self.btn_loop.setChecked(enabled)
-        self.act_loop.setChecked(enabled)
+    def _set_loop_state(self, enabled, notify=False):
+        if hasattr(self, 'btn_loop') and self.btn_loop:
+            self.btn_loop.blockSignals(True)
+            self.btn_loop.setChecked(enabled)
+            self.btn_loop.blockSignals(False)
+        if hasattr(self, 'act_loop') and self.act_loop:
+            self.act_loop.blockSignals(True)
+            self.act_loop.setChecked(enabled)
+            self.act_loop.blockSignals(False)
         self.backend.set_loop(enabled)
+        self.settings.setValue("loop", bool(enabled))
+        self.settings.sync()
+        if notify:
+            self.show_osd_banner("🔁 Repetición en bucle: ACTIVADA" if enabled else "🔁 Repetición en bucle: DESACTIVADA")
+
+    def _set_current_as_loop_a(self):
+        cur = self.backend.current_time
+        self.backend.set_ab_loop_a(cur)
+        self.show_osd_banner(f"🅰️ Inicio de Bucle (A) fijado en {self._fmt_time(cur)}")
+
+    def _set_current_as_loop_b(self):
+        cur = self.backend.current_time
+        self.backend.set_ab_loop_b(cur)
+        if self.backend.ab_loop_a is not None:
+            a = self.backend.ab_loop_a
+            b = self.backend.ab_loop_b
+            dur = abs(b - a)
+            self.show_osd_banner(f"🔂 Bucle A-B activo: {self._fmt_time(a)} ➔ {self._fmt_time(b)} ({dur:.1f}s)")
+        else:
+            self.show_osd_banner(f"🅱️ Fin de Bucle (B) fijado en {self._fmt_time(cur)}")
+
+    def _clear_ab_loop(self):
+        self.backend.clear_ab_loop()
+        self.show_osd_banner("🔄 Bucle A-B restablecido")
+
+    def _show_ab_loop_dialog(self):
+        if getattr(self, '_ab_loop_dialog', None) is not None:
+            self._ab_loop_dialog.sync_state()
+            self._ab_loop_dialog.show()
+            self._ab_loop_dialog.raise_()
+            self._ab_loop_dialog.activateWindow()
+            return
+        self._ab_loop_dialog = VRABLoopDialog(self.backend, self.backend.duration, self)
+        self._ab_loop_dialog.show()
+        self._ab_loop_dialog.raise_()
+        self._ab_loop_dialog.activateWindow()
+
+    def _update_ab_loop_menu_times(self, t=None):
+        """Actualiza en vivo los valores entre paréntesis de Fijar Inicio (A) y Fijar Fin (B) en el menú flotante."""
+        if t is None:
+            t = self.backend.current_time if self.backend else 0.0
+        t_str = self._fmt_time(t)
+        if hasattr(self, 'overlay_menu') and not self.overlay_menu.isHidden():
+            if getattr(self, '_overlay_btn_loop_a', None) is not None:
+                try:
+                    self._overlay_btn_loop_a.setText(f"    🅰️ Fijar Inicio (A) en posición actual ({t_str})  ([)")
+                except Exception:
+                    pass
+            if getattr(self, '_overlay_btn_loop_b', None) is not None:
+                try:
+                    self._overlay_btn_loop_b.setText(f"    🅱️ Fijar Fin (B) en posición actual ({t_str})  (])")
+                except Exception:
+                    pass
+
+    def _update_ab_overlay_status(self):
+        """Actualiza la etiqueta de estado activo/inactivo del bucle A-B en el menú flotante."""
+        if hasattr(self, 'overlay_menu') and not self.overlay_menu.isHidden() and getattr(self, '_overlay_lbl_ab_status', None) is not None:
+            has_a = self.backend.ab_loop_a is not None
+            has_b = self.backend.ab_loop_b is not None
+            if has_a and has_b:
+                dur = abs(self.backend.ab_loop_b - self.backend.ab_loop_a)
+                status_txt = f"    🟢 Bucle Activo: {self._fmt_time(self.backend.ab_loop_a)} ➔ {self._fmt_time(self.backend.ab_loop_b)} ({dur:.1f}s)"
+            elif has_a:
+                status_txt = f"    🟡 Punto A en {self._fmt_time(self.backend.ab_loop_a)} (Falta marcar B)"
+            elif has_b:
+                status_txt = f"    🟡 Punto B en {self._fmt_time(self.backend.ab_loop_b)} (Falta marcar A)"
+            else:
+                status_txt = "    ⚪ Sin bucle A-B establecido"
+            try:
+                self._overlay_lbl_ab_status.setText(status_txt)
+            except Exception:
+                pass
+
+    def _on_ab_loop_changed(self, a, b):
+        if hasattr(self, 'seek_slider') and self.seek_slider:
+            self.seek_slider.set_ab_loop(a, b)
+        if hasattr(self, 'btn_ab_loop') and self.btn_ab_loop:
+            if a is not None and b is not None:
+                self.btn_ab_loop.setText("🔂 A-B ✓ ▾")
+                self.btn_ab_loop.setStyleSheet("color: #38bdf8; font-weight: bold; border-color: rgba(56, 189, 248, 0.6);")
+                self.btn_ab_loop.setToolTip(f"Bucle A-B Activo: {self._fmt_time(a)} - {self._fmt_time(b)} ([ / ] / \\)")
+            elif a is not None:
+                self.btn_ab_loop.setText("🔂 A-.. ▾")
+                self.btn_ab_loop.setStyleSheet("color: #fbbf24;")
+                self.btn_ab_loop.setToolTip(f"Bucle A fijado en {self._fmt_time(a)}. Presione ']' para fijar B")
+            elif b is not None:
+                self.btn_ab_loop.setText("🔂 ..-B ▾")
+                self.btn_ab_loop.setStyleSheet("color: #fbbf24;")
+                self.btn_ab_loop.setToolTip(f"Bucle B fijado en {self._fmt_time(b)}. Presione '[' para fijar A")
+            else:
+                self.btn_ab_loop.setText("🔂 A-B ▾")
+                self.btn_ab_loop.setStyleSheet("")
+                self.btn_ab_loop.setToolTip("Bucle de sección A-B (Fijar A: '[', Fijar B: ']', Quitar: '\\')")
+        self._update_ab_overlay_status()
+        self._update_ab_loop_menu_times()
+        if getattr(self, '_ab_loop_dialog', None) is not None and not self._ab_loop_dialog.isHidden():
+            self._ab_loop_dialog.sync_state()
 
     def _toggle_mute(self):
         if self.is_muted:
@@ -3431,6 +3974,7 @@ class VRMainWindow(QMainWindow):
         self.backend.playback_state_changed.connect(self._on_playback_state_changed)
         self.backend.file_loaded.connect(self._on_file_loaded)
         self.backend.stats_updated.connect(self._on_stats_updated)
+        self.backend.ab_loop_changed.connect(self._on_ab_loop_changed)
         self.viewport.camera_changed.connect(self._on_camera_changed)
 
     def _setup_shortcuts(self):
@@ -3782,12 +4326,17 @@ class VRMainWindow(QMainWindow):
             val = int((t / dur) * 1000)
             self.seek_slider.setValue(val)
         self.cur_time_label.setText(self._fmt_time(t))
+        self._update_ab_loop_menu_times(t)
+        if getattr(self, '_ab_loop_dialog', None) is not None and not self._ab_loop_dialog.isHidden():
+            self._ab_loop_dialog._on_time_changed(t)
 
     def _on_duration_changed(self, dur):
         self.seek_slider.set_duration(dur)
         self.total_time_label.setText(self._fmt_time(dur))
 
     def _fmt_time(self, s):
+        if s is None:
+            return "00:00:00"
         s = max(0, int(s))
         m, s = divmod(s, 60)
         h, m = divmod(m, 60)
@@ -3802,6 +4351,9 @@ class VRMainWindow(QMainWindow):
         if dur > 0:
             target = (val / 1000.0) * dur
             self.cur_time_label.setText(self._fmt_time(target))
+            self._update_ab_loop_menu_times(target)
+            if getattr(self, '_ab_loop_dialog', None) is not None and not self._ab_loop_dialog.isHidden():
+                self._ab_loop_dialog._on_time_changed(target)
 
     def _on_seek_released(self):
         val = self.seek_slider.value()
@@ -3810,13 +4362,21 @@ class VRMainWindow(QMainWindow):
         self._last_seek_slider_val = val
         dur = self.backend.duration
         if dur > 0:
-            self.backend.seek((val / 1000.0) * dur, absolute=True, exact=True)
+            target = (val / 1000.0) * dur
+            self.backend.seek(target, absolute=True, exact=True)
+            self._update_ab_loop_menu_times(target)
+            if getattr(self, '_ab_loop_dialog', None) is not None and not self._ab_loop_dialog.isHidden():
+                self._ab_loop_dialog._on_time_changed(target)
 
     def _on_seek_clicked(self, val):
         self._last_seek_slider_val = val
         dur = self.backend.duration
         if dur > 0:
-            self.backend.seek((val / 1000.0) * dur, absolute=True, exact=True)
+            target = (val / 1000.0) * dur
+            self.backend.seek(target, absolute=True, exact=True)
+            self._update_ab_loop_menu_times(target)
+            if getattr(self, '_ab_loop_dialog', None) is not None and not self._ab_loop_dialog.isHidden():
+                self._ab_loop_dialog._on_time_changed(target)
 
     def _on_file_loaded(self, info):
         w = info.get('width', 0)

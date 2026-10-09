@@ -106,6 +106,7 @@ class VRVideoBackend(QObject):
     playback_state_changed = Signal(bool)
     stats_updated = Signal(dict)
     frame_ready = Signal()
+    ab_loop_changed = Signal(object, object)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -118,6 +119,9 @@ class VRVideoBackend(QObject):
         self.video_width = 0
         self.video_height = 0
         self.gpu_monitor = GPUMonitor()
+        self.loop_enabled = True
+        self.ab_loop_a = None
+        self.ab_loop_b = None
         
         # Telemetry timer for smooth stats reporting
         self.telemetry_timer = QTimer(self)
@@ -138,6 +142,7 @@ class VRVideoBackend(QObject):
                 terminal=False,
                 ytdl=False,
                 keep_open='yes',
+                loop_file='inf' if self.loop_enabled else 'no',
                 hr_seek='always',
                 hr_seek_framedrop='no'
             )
@@ -242,8 +247,16 @@ class VRVideoBackend(QObject):
             print("File not found:", filepath)
             return False
         self.current_file = filepath
+        self.ab_loop_a = None
+        self.ab_loop_b = None
+        self.ab_loop_changed.emit(None, None)
         self.mpv_player.play(filepath)
         self.mpv_player.pause = False
+        if self.loop_enabled:
+            try:
+                self.mpv_player.loop = 'inf'
+            except Exception:
+                pass
         return True
 
     def play(self):
@@ -276,8 +289,95 @@ class VRVideoBackend(QObject):
             self.mpv_player.volume = max(0, min(100, int(vol)))
 
     def set_loop(self, enabled):
+        self.loop_enabled = bool(enabled)
         if self.mpv_player:
-            self.mpv_player.loop = 'inf' if enabled else 'no'
+            try:
+                self.mpv_player.loop = 'inf' if enabled else 'no'
+            except Exception:
+                pass
+
+    def set_ab_loop_a(self, sec=None):
+        """Fija el punto de inicio A para el bucle. Si sec es None, usa current_time."""
+        target = max(0.0, float(sec) if sec is not None else float(self.current_time))
+        if self.duration > 0:
+            target = min(self.duration, target)
+        self.ab_loop_a = target
+        if self.ab_loop_b is not None and self.ab_loop_b <= self.ab_loop_a:
+            self.ab_loop_b = None
+            if self.mpv_player:
+                try:
+                    self.mpv_player['ab-loop-b'] = 'no'
+                except Exception:
+                    pass
+        if self.mpv_player:
+            try:
+                self.mpv_player['ab-loop-a'] = self.ab_loop_a
+            except Exception:
+                pass
+        self.ab_loop_changed.emit(self.ab_loop_a, self.ab_loop_b)
+        return self.ab_loop_a
+
+    def set_ab_loop_b(self, sec=None):
+        """Fija el punto de fin B para el bucle. Si sec es None, usa current_time."""
+        target = max(0.0, float(sec) if sec is not None else float(self.current_time))
+        if self.duration > 0:
+            target = min(self.duration, target)
+        
+        # Si A no está fijado, fijar A en el inicio (0.0)
+        if self.ab_loop_a is None:
+            self.set_ab_loop_a(0.0)
+            
+        # Si B es menor que A, intercambiar
+        if target < self.ab_loop_a:
+            old_a = self.ab_loop_a
+            self.ab_loop_a = target
+            self.ab_loop_b = old_a
+        else:
+            self.ab_loop_b = target
+
+        if self.mpv_player:
+            try:
+                self.mpv_player['ab-loop-a'] = self.ab_loop_a
+                self.mpv_player['ab-loop-b'] = self.ab_loop_b
+            except Exception:
+                pass
+            if self.current_time > self.ab_loop_b or self.current_time < self.ab_loop_a:
+                self.seek(self.ab_loop_a, absolute=True, exact=True)
+        self.ab_loop_changed.emit(self.ab_loop_a, self.ab_loop_b)
+        return self.ab_loop_b
+
+    def set_ab_loop_range(self, a_sec, b_sec):
+        """Establece un rango exacto A y B."""
+        a = max(0.0, float(a_sec))
+        b = max(0.0, float(b_sec))
+        if self.duration > 0:
+            a = min(self.duration, a)
+            b = min(self.duration, b)
+        if b < a:
+            a, b = b, a
+        self.ab_loop_a = a
+        self.ab_loop_b = b
+        if self.mpv_player:
+            try:
+                self.mpv_player['ab-loop-a'] = self.ab_loop_a
+                self.mpv_player['ab-loop-b'] = self.ab_loop_b
+            except Exception:
+                pass
+            if self.current_time > self.ab_loop_b or self.current_time < self.ab_loop_a:
+                self.seek(self.ab_loop_a, absolute=True, exact=True)
+        self.ab_loop_changed.emit(self.ab_loop_a, self.ab_loop_b)
+
+    def clear_ab_loop(self):
+        """Borra la sección A-B y vuelve a repetir el video completo."""
+        self.ab_loop_a = None
+        self.ab_loop_b = None
+        if self.mpv_player:
+            try:
+                self.mpv_player['ab-loop-a'] = 'no'
+                self.mpv_player['ab-loop-b'] = 'no'
+            except Exception:
+                pass
+        self.ab_loop_changed.emit(None, None)
 
     def render_frame_to_fbo(self, fbo_id, width, height, flip_y=False):
         if self.render_ctx:
