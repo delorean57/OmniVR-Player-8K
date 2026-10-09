@@ -1,0 +1,52 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyd
+
+# C extensions & Binaries (>100MB blocked by GitHub)
+*.exe
+*.com
+*.dll
+*.dll.a
+*.so
+*.dylib
+*.lib
+*.exp
+
+
+# Large Media Files (Video recordings & renders)
+*.mp4
+*.mkv
+*.mov
+*.webm
+*.ts
+*.360
+*.insv
+
+# Temporary test captures and debug screenshots
+*.png
+*.jpg
+*.jpeg
+!assets/*.png
+!assets/*.jpg
+!doc/*.png
+!doc/*.ico
+
+# Virtual environments
+venv/
+env/
+.venv/
+ENV/
+
+# IDE & OS files
+.vscode/
+.idea/
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+Thumbs.db
+Desktop.ini
+*.log
+*.tmp
